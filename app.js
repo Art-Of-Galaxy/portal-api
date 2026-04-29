@@ -9,11 +9,20 @@ const session = require('express-session');
 const passport = require('./config/passport');
 const authRouter = require('./auth/router');
 const { ensureDatabaseSchema } = require('./config/initdb');
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 // Security middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.CORS_ORIGIN,
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -46,20 +55,44 @@ app.use('/api/staff', require('./staff/router'));
 app.use('/api/brand-guidelines', require('./brand-guidelines/router'));
 app.use('/api/rebranding', require('./rebranding/router'));
 app.use('/api/ecommerce-mockups', require('./ecommerce-mockups/router'));
+app.get('/', (_req, res) => {
+  res.status(200).json({ status: true, message: 'AOG Portal API is running' });
+});
+app.get('/api/health', (_req, res) => {
+  res.status(200).json({ status: true, message: 'AOG Portal API is running' });
+});
 
 // Server Listen
 const PORT = process.env.PORT || 3000;
+let schemaReadyPromise = null;
+
+function initializeDatabaseSchema() {
+  if (!schemaReadyPromise) {
+    schemaReadyPromise = ensureDatabaseSchema().catch((error) => {
+      schemaReadyPromise = null;
+      throw error;
+    });
+  }
+  return schemaReadyPromise;
+}
 
 async function startServer() {
   try {
-    await ensureDatabaseSchema();
-    // app.listen(PORT, () => {
-    //   console.log(`Server running on http://localhost:${PORT}`);
-    // });
+    await initializeDatabaseSchema();
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
   } catch (error) {
     console.error('Failed to initialize database schema:', error);
     process.exit(1);
   }
 }
 
-startServer();
+app.initializeDatabaseSchema = initializeDatabaseSchema;
+app.startServer = startServer;
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = app;

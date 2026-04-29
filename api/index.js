@@ -1,10 +1,14 @@
-const express = require("express");
-const serverless = require("serverless-http");
+const app = require('../app');
 
-const app = express();
-
-app.get("/", (req, res) => {
-  res.json({ message: "Working on Vercel 🚀" });
-});
-
-module.exports = serverless(app);
+module.exports = async (req, res) => {
+  try {
+    await app.initializeDatabaseSchema();
+    return app(req, res);
+  } catch (error) {
+    console.error('Failed to initialize API request:', error);
+    return res.status(500).json({
+      status: false,
+      message: 'API initialization failed',
+    });
+  }
+};
