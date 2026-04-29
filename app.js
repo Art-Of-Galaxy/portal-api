@@ -45,6 +45,7 @@ app.use('/api/notion', require('./notion/router'));
 app.use('/api/staff', require('./staff/router'));
 app.use('/api/brand-guidelines', require('./brand-guidelines/router'));
 app.use('/api/rebranding', require('./rebranding/router'));
+app.use('/api/ecommerce-mockups', require('./ecommerce-mockups/router'));
 
 // Server Listen
 const PORT = process.env.PORT || 3000;
@@ -52,9 +53,9 @@ const PORT = process.env.PORT || 3000;
 async function startServer() {
   try {
     await ensureDatabaseSchema();
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
+    // app.listen(PORT, () => {
+    //   console.log(`Server running on http://localhost:${PORT}`);
+    // });
   } catch (error) {
     console.error('Failed to initialize database schema:', error);
     process.exit(1);
