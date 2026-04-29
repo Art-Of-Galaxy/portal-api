@@ -61,6 +61,18 @@ app.get('/', (_req, res) => {
 app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: true, message: 'AOG Portal API is running' });
 });
+app.get('/api/db-health', async (_req, res) => {
+  try {
+    await initializeDatabaseSchema();
+    return res.status(200).json({ status: true, message: 'Database initialization succeeded' });
+  } catch (error) {
+    console.error('Database health check failed:', error);
+    return res.status(500).json({
+      status: false,
+      message: 'Database initialization failed',
+    });
+  }
+});
 
 // Server Listen
 const PORT = process.env.PORT || 3000;
