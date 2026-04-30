@@ -1,5 +1,6 @@
 const service = require('./service');
 const notionService = require('../notion/service');
+const authService = require('../auth/service');
 
 const REQUIRED_FORM_FIELDS = [
   'brand_name',
@@ -28,8 +29,11 @@ async function generate(req, res) {
       });
     }
 
+    const clientContext = await authService.getServiceContextByEmail(userEmail);
+    const enrichedForm = clientContext ? { ...form, client_profile_context: clientContext } : form;
+
     const result = await service.generateBrandGuidelines({
-      form,
+      form: enrichedForm,
       requestedModel: model,
     });
 
@@ -41,7 +45,7 @@ async function generate(req, res) {
         category: 'Branding & Design',
         serviceType: 'brand_guidelines',
         userEmail: userEmail || null,
-        inputData: form,
+        inputData: enrichedForm,
         outputData: result.guidelines,
         model: result.model,
       });

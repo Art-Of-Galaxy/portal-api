@@ -2,6 +2,26 @@ const db_helper = require('../helper/db_helper');
 const auth_helper = require('../helper/auth_helper');
 const jwt = require('jsonwebtoken');
 const jwtSecret = process.env.JWT_SECRET || process.env.SECRET_KEY || 'default_secret';
+const PROFILE_SELECT = `
+    SELECT id, name, email, phone, dob, profile_photo_url, onboarding_data, created_at, updated_at
+    FROM users
+`;
+
+function normalizeEmail(email) {
+    return typeof email === 'string' ? email.trim().toLowerCase() : '';
+}
+
+function defaultNameFromEmail(email) {
+    const normalizedEmail = normalizeEmail(email);
+    return normalizedEmail ? normalizedEmail.split('@')[0] : 'User';
+}
+
+function firstReturnedRow(result) {
+    if (Array.isArray(result)) return result[0] || null;
+    if (Array.isArray(result?.rows)) return result.rows[0] || null;
+    return null;
+}
+
 exports.login = (req, res) => {
   return new Promise((resolve, reject) => {
     const { email, password } = req.body;
@@ -98,5 +118,127 @@ exports.googleLogin = async (email, name) => {
             reject({ success: false, message: 'Unexpected error', error: err.message });
         }
     });
+};
+
+exports.getProfileByEmail = async (email) => {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) return null;
+
+    const db_poll = await db_helper.get_db_connection();
+    const rows = await db_poll.query(
+        `${PROFILE_SELECT}
+         WHERE LOWER(email) = LOWER(?)
+         LIMIT 1`,
+        [normalizedEmail]
+    );
+
+    return rows && rows.length ? rows[0] : null;
+};
+
+exports.getOrCreateProfileByEmail = async (email, name) => {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) return null;
+
+    const existingProfile = await exports.getProfileByEmail(normalizedEmail);
+    if (existingProfile) return existingProfile;
+
+    const db_poll = await db_helper.get_db_connection();
+    const inserted = await db_poll.query(
+        `INSERT INTO users (email, name, active)
+         VALUES (?, ?, 1)
+         ON CONFLICT (email) DO UPDATE
+           SET email = EXCLUDED.email
+         RETURNING id`,
+        [normalizedEmail, name || defaultNameFromEmail(normalizedEmail)]
+    );
+
+    if (!inserted) return null;
+    return exports.getProfileByEmail(normalizedEmail);
+};
+
+exports.updateProfile = async (email, profile) => {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) return null;
+
+    await exports.getOrCreateProfileByEmail(normalizedEmail, profile?.name);
+
+    const db_poll = await db_helper.get_db_connection();
+    const { name, phone, dob, profile_photo_url } = profile || {};
+    const result = await db_poll.query(
+        `UPDATE users
+         SET name = COALESCE(?, name),
+             phone = COALESCE(?, phone),
+             dob = COALESCE(?, dob),
+             profile_photo_url = COALESCE(?, profile_photo_url),
+             updated_at = NOW()
+         WHERE LOWER(email) = LOWER(?)
+         RETURNING id, name, email, phone, dob, profile_photo_url, onboarding_data, created_at, updated_at`,
+        [
+            name === undefined ? null : name,
+            phone === undefined ? null : phone,
+            dob === undefined ? null : dob,
+            profile_photo_url === undefined ? null : profile_photo_url,
+            normalizedEmail,
+        ]
+    );
+
+    return firstReturnedRow(result);
+};
+
+exports.updatePassword = async (email, currentPassword, newPassword) => {
+    const normalizedEmail = normalizeEmail(email);
+    const db_poll = await db_helper.get_db_connection();
+    const rows = await db_poll.query(
+        `SELECT id FROM users WHERE LOWER(email) = LOWER(?) AND password = ? LIMIT 1`,
+        [normalizedEmail, currentPassword]
+    );
+
+    if (!rows || !rows.length) {
+        return { success: false, message: 'Current password is incorrect' };
+    }
+
+    await db_poll.query(
+        `UPDATE users SET password = ?, updated_at = NOW() WHERE LOWER(email) = LOWER(?)`,
+        [newPassword, normalizedEmail]
+    );
+
+    return { success: true };
+};
+
+exports.saveOnboarding = async (email, onboardingData) => {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) return null;
+
+    await exports.getOrCreateProfileByEmail(normalizedEmail);
+
+    const db_poll = await db_helper.get_db_connection();
+    const result = await db_poll.query(
+        `UPDATE users
+         SET onboarding_data = ?::jsonb,
+             phone = COALESCE(?, phone),
+             updated_at = NOW()
+         WHERE LOWER(email) = LOWER(?)
+         RETURNING id, name, email, phone, dob, profile_photo_url, onboarding_data, created_at, updated_at`,
+        [
+            JSON.stringify(onboardingData || {}),
+            onboardingData?.business?.phone || null,
+            normalizedEmail,
+        ]
+    );
+
+    return firstReturnedRow(result);
+};
+
+exports.getServiceContextByEmail = async (email) => {
+    if (!email) return null;
+    const profile = await exports.getProfileByEmail(email);
+    if (!profile) return null;
+
+    return {
+        name: profile.name,
+        email: profile.email,
+        phone: profile.phone,
+        onboarding: profile.onboarding_data || null,
+    };
 };
 

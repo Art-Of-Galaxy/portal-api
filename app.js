@@ -26,7 +26,7 @@ app.use(cors({
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Database-Id']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Database-Id', 'X-User-Email']
 }));
 
 // Middleware to parse incoming requests

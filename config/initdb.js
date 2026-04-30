@@ -14,6 +14,10 @@ async function ensureDatabaseSchema() {
     );
   `);
 
+  await poll.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(100);`);
+  await poll.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo_url TEXT;`);
+  await poll.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_data JSONB;`);
+
   await poll.query(`
     CREATE TABLE IF NOT EXISTS project_priority (
       id INTEGER PRIMARY KEY,

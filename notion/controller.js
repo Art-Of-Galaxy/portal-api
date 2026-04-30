@@ -2,6 +2,8 @@ const notionService = require('./service');
 const axios = require('axios');
 require('dotenv').config();
 const { OpenAI } = require('openai');
+const jwt = require('jsonwebtoken');
+const jwtSecret = process.env.JWT_SECRET || process.env.SECRET_KEY || 'default_secret';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -16,8 +18,35 @@ function describeError(err) {
   return 'Internal server error';
 }
 
+function getRequestEmail(req) {
+  const rawFallback = (
+    req.headers?.['x-user-email'] ||
+    req.body?.user_email ||
+    ''
+  );
+  const fallbackEmail = typeof rawFallback === 'string' ? rawFallback.trim() : '';
+  const authHeader = req.headers?.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+  if (!token) return fallbackEmail;
+
+  try {
+    const decoded = jwt.verify(token, jwtSecret);
+    const rawEmail = decoded.email || decoded.user_email || fallbackEmail || '';
+    return typeof rawEmail === 'string' ? rawEmail.trim() : fallbackEmail;
+  } catch {
+    return fallbackEmail;
+  }
+}
+
 let get_projects = async (req, res) => {
   try {
+    const userEmail = getRequestEmail(req);
+    req.body = {
+      ...(req.body || {}),
+      user_email: userEmail,
+    };
+
     // const NOTION_TOKEN = "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";
     // console.log('NOTION_TOKEN:', NOTION_TOKEN);
 
@@ -83,6 +112,11 @@ let get_projects = async (req, res) => {
 };
 let add_project = async (req, res) => {
   try {
+    const userEmail = getRequestEmail(req);
+    req.body = {
+      ...(req.body || {}),
+      user_email: userEmail,
+    };
 
     console.log('received data:', req.body);
 
@@ -238,7 +272,7 @@ let get_files = async (req, res) => {
 let get_project_by_id = async (req, res) => {
   try {
     const id = (req.body && req.body.id) || req.params.id;
-    const userEmail = req.body && req.body.user_email;
+    const userEmail = getRequestEmail(req);
     if (!id) return res.status(400).json({ success: false, message: 'Missing project id' });
 
     const row = await notionService.get_project_by_id({ id, userEmail });

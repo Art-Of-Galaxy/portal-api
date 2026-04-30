@@ -1,5 +1,6 @@
 const service = require('./service');
 const notionService = require('../notion/service');
+const authService = require('../auth/service');
 
 const REQUIRED_FORM_FIELDS = [
   'product_name',
@@ -28,8 +29,11 @@ async function generate(req, res) {
       });
     }
 
+    const clientContext = await authService.getServiceContextByEmail(userEmail);
+    const enrichedForm = clientContext ? { ...form, client_profile_context: clientContext } : form;
+
     const result = await service.generateEcommerceMockups({
-      form,
+      form: enrichedForm,
       requestedModel: model,
     });
 
@@ -40,7 +44,7 @@ async function generate(req, res) {
         category: 'Branding & Design',
         serviceType: 'ecommerce_mockups',
         userEmail: userEmail || null,
-        inputData: form,
+        inputData: enrichedForm,
         outputData: result.mockups,
         model: result.model,
       });

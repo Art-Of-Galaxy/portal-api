@@ -5,6 +5,10 @@ const jwt = require('jsonwebtoken');
 
 // services/project.service.js
 
+function normalizeEmail(email) {
+  return typeof email === 'string' ? email.trim().toLowerCase() : '';
+}
+
 exports.get_project_priority = async (req, res) => {
   return new Promise(async (resolve, reject) => {
     try {
@@ -65,11 +69,13 @@ exports.add_project = async (req, res) => {
 
       console.log('Adding project with data:', req.body);
 
-      // Corrected insert query with 10 placeholders
+      const userEmail = normalizeEmail(req.body?.user_email || req.headers?.['x-user-email']);
+
+      // Corrected insert query with 11 placeholders
       const insertSql = `
         INSERT INTO tbl_projects 
-        (project_name, assignee, assign_to, due_date, tags, status, priority, org_id, created_date, is_delete) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (project_name, assignee, assign_to, due_date, tags, status, priority, org_id, created_date, is_delete, user_email) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
       `;
 
@@ -83,7 +89,8 @@ exports.add_project = async (req, res) => {
         req.body.priority,      // priority
         1,                      // org_id (hardcoded)
         req.body.startDate,     // created_date
-        0                      // is_delete (default set)
+        0,                     // is_delete (default set)
+        userEmail || null      // project owner
       ], async (insertErr, insertResult) => {
         if (insertErr) {
           console.error('Error inserting project:', insertErr);
@@ -110,7 +117,10 @@ exports.get_projects = async (req, res) => {
   return new Promise(async (resolve, reject) => {
     try {
       let db_poll = await db_helper.get_db_connection();
-      const userEmail = (req && req.body && req.body.user_email) || null;
+      const userEmail = normalizeEmail(
+        (req && req.body && req.body.user_email) ||
+        (req && req.headers && req.headers['x-user-email'])
+      );
 
       const sql = `SELECT
   p.id,
@@ -144,11 +154,12 @@ exports.get_projects = async (req, res) => {
 FROM tbl_projects AS p
 LEFT JOIN users AS u ON p.assign_to = u.id
 WHERE p.is_delete = 0
-  AND (?::text IS NULL OR p.user_email IS NULL OR p.user_email = ?)
+  AND p.user_email IS NOT NULL
+  AND LOWER(p.user_email) = LOWER(?)
 ORDER BY p.id DESC;
 `;
 
-      db_poll.query(sql, [userEmail, userEmail], async (err, result) => {
+      db_poll.query(sql, [userEmail || null], async (err, result) => {
         if (err) {
           console.error('Error executing query:', err);
           return reject({ success: false, message: 'Database error', error: err.message });
@@ -171,6 +182,7 @@ ORDER BY p.id DESC;
 
 exports.get_project_by_id = async ({ id, userEmail }) => {
   const db_poll = await db_helper.get_db_connection();
+  const normalizedEmail = normalizeEmail(userEmail);
   const sql = `SELECT
     p.id,
     p.project_name,
@@ -190,10 +202,11 @@ exports.get_project_by_id = async ({ id, userEmail }) => {
   FROM tbl_projects AS p
   WHERE p.id = ?
     AND p.is_delete = 0
-    AND (?::text IS NULL OR p.user_email IS NULL OR p.user_email = ?)
+    AND p.user_email IS NOT NULL
+    AND LOWER(p.user_email) = LOWER(?)
   LIMIT 1`;
 
-  const rows = await db_poll.query(sql, [id, userEmail || null, userEmail || null]);
+  const rows = await db_poll.query(sql, [id, normalizedEmail || null]);
   return rows && rows.length ? rows[0] : null;
 };
 
@@ -209,6 +222,7 @@ exports.save_service_request = async ({
   model,
 }) => {
   const db_poll = await db_helper.get_db_connection();
+  const normalizedEmail = normalizeEmail(userEmail);
   const insertSql = `
     INSERT INTO tbl_projects
       (project_name, category, service_type, user_email, input_data, output_data, model,
@@ -220,7 +234,7 @@ exports.save_service_request = async ({
     projectName,
     category,
     serviceType,
-    userEmail || null,
+    normalizedEmail || null,
     inputData ? JSON.stringify(inputData) : null,
     outputData ? JSON.stringify(outputData) : null,
     model || null,

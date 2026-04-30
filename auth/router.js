@@ -10,7 +10,32 @@ const isGoogleOauthEnabled =
   !!process.env.GOOGLE_CLIENT_SECRET &&
   !!process.env.GOOGLE_CALLBACK_URL;
 
+function authenticateRequest(req, res, next) {
+  try {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : req.body?.token;
+    const fallbackEmail = req.headers['x-user-email'] || req.body?.user_email;
+
+    if (!token) {
+      return res.status(401).json({ status: false, message: 'Missing authorization token' });
+    }
+
+    const decoded = jwt.verify(token, jwtSecret);
+    req.user = {
+      ...decoded,
+      email: decoded.email || decoded.user_email || fallbackEmail,
+    };
+    return next();
+  } catch (error) {
+    return res.status(401).json({ status: false, message: 'Invalid authorization token' });
+  }
+}
+
 router.post('/login', authController.login);
+router.get('/profile', authenticateRequest, authController.getProfile);
+router.put('/profile', authenticateRequest, authController.updateProfile);
+router.put('/profile/password', authenticateRequest, authController.updatePassword);
+router.post('/onboarding', authenticateRequest, authController.saveOnboarding);
 
 // Step 1: Redirect to Google for authentication
 router.get('/google', (req, res, next) => {
