@@ -210,6 +210,30 @@ exports.get_project_by_id = async ({ id, userEmail }) => {
   return rows && rows.length ? rows[0] : null;
 };
 
+// Soft-delete a project. Scoped to the requesting user so a malicious caller
+// can't delete somebody else's row by guessing an id. Files associated with
+// the project are intentionally LEFT in place (they remain in My Files) —
+// callers can delete files individually from the My Files page.
+exports.delete_project = async ({ id, userEmail }) => {
+  if (!id) return false;
+  const db_poll = await db_helper.get_db_connection();
+  const normalizedEmail = normalizeEmail(userEmail);
+  const sql = `
+    UPDATE tbl_projects
+       SET is_delete = 1
+     WHERE id = ?
+       AND is_delete = 0
+       AND user_email IS NOT NULL
+       AND LOWER(user_email) = LOWER(?)
+    RETURNING id
+  `;
+  const result = await db_poll.query(sql, [id, normalizedEmail || null]);
+  if (!result) return false;
+  if (Array.isArray(result)) return result.length > 0;
+  if (Array.isArray(result.rows)) return result.rows.length > 0;
+  return false;
+};
+
 // Insert a service-request project (called by brand-guidelines and future tool flows).
 // Returns the new project id.
 exports.save_service_request = async ({

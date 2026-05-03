@@ -79,6 +79,18 @@ async function ensureDatabaseSchema() {
     );
   `);
 
+  // tbl_files now serves both uploaded files and AI-generated outputs.
+  // These idempotent ALTERs add per-user, per-project, and per-category context
+  // so the My Files page can group them.
+  await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES tbl_projects(id) ON DELETE SET NULL;`);
+  await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS user_email VARCHAR(255);`);
+  await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS category VARCHAR(100);`);
+  await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS service_type VARCHAR(100);`);
+  await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS source VARCHAR(20);`);
+  await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS mime_type VARCHAR(100);`);
+  await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS size_bytes BIGINT;`);
+  await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS is_delete INTEGER NOT NULL DEFAULT 0;`);
+
   await poll.query(`
     INSERT INTO project_priority (id, name)
     VALUES

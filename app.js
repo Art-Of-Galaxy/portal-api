@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const express = require('express');
+const path = require('path');
 const app = express();
 const helmet = require('helmet');
 const cors = require('cors');
@@ -34,6 +35,22 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
 
+// Serve user-uploaded files. Mounted before session/passport so static asset
+// requests don't pay the session-lookup cost. helmet's default
+// cross-origin-resource-policy would block <img> tags from the Vite dev
+// server, so relax it just for /uploads.
+app.use(
+  '/uploads',
+  (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+  },
+  express.static(path.join(__dirname, 'uploads'), {
+    fallthrough: true,
+    maxAge: '7d',
+  })
+);
+
 // Session middleware (required for Passport OAuth)
 app.use(
   session({
@@ -55,6 +72,9 @@ app.use('/api/staff', require('./staff/router'));
 app.use('/api/brand-guidelines', require('./brand-guidelines/router'));
 app.use('/api/rebranding', require('./rebranding/router'));
 app.use('/api/ecommerce-mockups', require('./ecommerce-mockups/router'));
+app.use('/api/logo-design', require('./logo-design/router'));
+app.use('/api/files', require('./files/router'));
+
 app.get('/', (_req, res) => {
   res.status(200).json({ status: true, message: 'AOG Portal API is running' });
 });

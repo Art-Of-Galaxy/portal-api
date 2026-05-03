@@ -98,6 +98,7 @@ router.post('/authenticate', async (req, res) => {
         user: {
           email: ressult.user.email,
           name: ressult.user.name,
+          profile_photo_url: ressult.user.profile_photo_url || null,
         },
       });
     }

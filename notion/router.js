@@ -14,5 +14,6 @@ router.post('/get_task', notioncontroller.get_task);
 router.post('/save_file', notioncontroller.save_file);
 router.post('/get_files', notioncontroller.get_files);
 router.post('/get_project_by_id', notioncontroller.get_project_by_id);
+router.post('/delete_project', notioncontroller.delete_project);
 
 module.exports = router;

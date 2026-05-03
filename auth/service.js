@@ -48,6 +48,7 @@ exports.login = (req, res) => {
               token: token,
               name: result[0].name,
               email: result[0].email,
+              profile_photo_url: result[0].profile_photo_url || null,
             });
           } else {
             resolve({ success: false });
@@ -74,14 +75,15 @@ exports.googleLogin = async (email, name) => {
                 if (result.length > 0) {
                     // User exists
                     console.log('resultgoogleLogin', result[0].id);
-                    
+
                     try {
                         const token = await auth_helper.encrypt(result[0].id);
                         resolve({
                             success: true,
                             token: token,
                             name: result[0].name,
-                            email: result[0].email
+                            email: result[0].email,
+                            profile_photo_url: result[0].profile_photo_url || null,
                         });
                     } catch (encryptErr) {
                         console.error('Error encrypting ID:', encryptErr);

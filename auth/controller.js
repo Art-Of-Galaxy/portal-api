@@ -13,14 +13,15 @@ let login = async (req, res) => {
   try {
     const result = await authService.login(req, res);
     if (result.success) {
-      res.status(200).json({ 
-          message: 'Login successful', 
+      res.status(200).json({
+          message: 'Login successful',
           token: result.token,
           status: true,
           user: {
             name: result.name,
-            email: result.email
-          } 
+            email: result.email,
+            profile_photo_url: result.profile_photo_url || null,
+          }
         });
     } else {
       res.status(401).json({ message: 'Invalid credentials' });
@@ -41,7 +42,8 @@ let googleLogin = async (email) => {
           token: result.token,
           user: {
             email: result.email,
-            name: result.name
+            name: result.name,
+            profile_photo_url: result.profile_photo_url || null,
           }
         });
       } else {

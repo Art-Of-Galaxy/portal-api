@@ -285,6 +285,24 @@ let get_project_by_id = async (req, res) => {
   }
 };
 
+let delete_project = async (req, res) => {
+  try {
+    const id = req.body?.id || req.params.id;
+    const userEmail = req.body?.user_email;
+    if (!id) return res.status(400).json({ success: false, message: 'Missing project id' });
+    if (!userEmail) return res.status(400).json({ success: false, message: 'Missing user email' });
+
+    const ok = await notionService.delete_project({ id, userEmail });
+    if (!ok) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error('Error deleting project:', err);
+    return res.status(500).json({ success: false, message: describeError(err) });
+  }
+};
+
 module.exports = {
   get_projects,
   add_project,
@@ -296,4 +314,5 @@ module.exports = {
   save_file,
   get_files,
   get_project_by_id,
+  delete_project,
 };

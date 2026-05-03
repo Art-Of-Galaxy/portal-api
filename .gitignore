@@ -89,3 +89,6 @@ package-lock.json
 
 # VSCode settings
 .vscode/
+
+# Local file uploads (served at /uploads/)
+uploads/
