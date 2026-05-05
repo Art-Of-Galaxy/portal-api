@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const express = require('express');
-const path = require('path');
+const filesController = require('./files/controller');
 const app = express();
 const helmet = require('helmet');
 const cors = require('cors');
@@ -39,16 +39,22 @@ app.use(cookieParser());
 // requests don't pay the session-lookup cost. helmet's default
 // cross-origin-resource-policy would block <img> tags from the Vite dev
 // server, so relax it just for /uploads.
+//
+// The uploads directory is resolved at request time (filesController picks a
+// writable path: /tmp on serverless, ./uploads in dev). We don't pre-create
+// it at startup because /var/task is read-only on Vercel/Lambda.
 app.use(
   '/uploads',
   (req, res, next) => {
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     next();
   },
-  express.static(path.join(__dirname, 'uploads'), {
-    fallthrough: true,
-    maxAge: '7d',
-  })
+  (req, res, next) => {
+    express.static(filesController.uploadsRootDir(), {
+      fallthrough: true,
+      maxAge: '7d',
+    })(req, res, next);
+  }
 );
 
 // Session middleware (required for Passport OAuth)
