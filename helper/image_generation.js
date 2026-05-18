@@ -8,28 +8,63 @@ const { fal } = require('@fal-ai/client');
 
 // Models we trust for production-style work. Add to this list deliberately —
 // the per-service controllers should also pick a sensible default for their
-// use case (e.g. recraft-v3 for logos, flux-pro for high-fidelity mockups).
+// use case (e.g. nano-banana / gpt-image-1 for logos, flux-pro for
+// high-fidelity mockups).
 const ALLOWED_MODELS = new Set([
-  'fal-ai/recraft-v3',          // strong with text + logo / vector aesthetics
-  'fal-ai/ideogram/v2',         // also strong with on-image text
-  'fal-ai/flux/dev',            // general-purpose, fast iteration
-  'fal-ai/flux/schnell',        // fastest, lower quality
-  'fal-ai/flux-pro/v1.1',       // highest quality general purpose
-  'fal-ai/flux-pro/v1.1-ultra', // very high quality
+  // Reference-image-aware (good for matching a style we show the model)
+  'fal-ai/nano-banana',          // Google Gemini 2.5 Flash Image
+  'fal-ai/gpt-image-1',          // OpenAI GPT Image 1
+  'fal-ai/recraft-v3',           // logo / vector aesthetics with image_url
+
+  // Text-to-image (no reference image input)
+  'fal-ai/ideogram/v2',
+  'fal-ai/ideogram/v3',
+  'fal-ai/flux/dev',
+  'fal-ai/flux/schnell',
+  'fal-ai/flux-pro/v1.1',
+  'fal-ai/flux-pro/v1.1-ultra',
 ]);
 
-const DEFAULT_MODEL = 'fal-ai/recraft-v3';
+const DEFAULT_MODEL = 'fal-ai/nano-banana';
 
-// Per-request image cap by model. fal.ai enforces these on its side so picking
-// 8 from a model that allows 4 silently returns 4. We chunk to honor the user.
+// Per-request image cap by model. We deliberately set most flux models to
+// 1 even though their schemas accept `num_images` up to 4: in practice the
+// endpoint frequently returns a single image regardless of the requested
+// count, so we issue N separate calls instead. This guarantees the user
+// gets the number of variants they asked for, each with its own seed.
 const MODEL_MAX_PER_REQUEST = {
-  'fal-ai/recraft-v3': 6,
-  'fal-ai/ideogram/v2': 4,
-  'fal-ai/flux/dev': 4,
-  'fal-ai/flux/schnell': 4,
-  'fal-ai/flux-pro/v1.1': 4,
+  'fal-ai/nano-banana': 1,
+  'fal-ai/gpt-image-1': 1,
+  'fal-ai/recraft-v3': 1,
+  'fal-ai/ideogram/v2': 1,
+  'fal-ai/ideogram/v3': 1,
+  'fal-ai/flux/dev': 1,
+  'fal-ai/flux/schnell': 1,
+  'fal-ai/flux-pro/v1.1': 1,
   'fal-ai/flux-pro/v1.1-ultra': 1,
 };
+
+// Which models accept image inputs and under which schema key. Used by
+// callers (e.g. logo-design service) to decide whether to forward the
+// style reference URLs and what field name to use.
+//   - "image_urls" : array  -> nano-banana, gpt-image-1, ideogram v3 redux variants
+//   - "image_url"  : string -> recraft v3 (single style reference)
+//   - null         : no image input supported
+const MODEL_IMAGE_INPUT = {
+  'fal-ai/nano-banana': 'image_urls',
+  'fal-ai/gpt-image-1': 'image_urls',
+  'fal-ai/recraft-v3':  'image_url',
+};
+
+function imageInputKey(model) {
+  return MODEL_IMAGE_INPUT[model] || null;
+}
+
+// How many fal.ai calls to fire at once. fal queues + polls under the hood,
+// so we don't want a wall of parallel requests slamming our IP-level quota.
+// 4 is a good sweet spot for a logo grid: 4 variants come back in roughly
+// the time a single call takes, and 8/12 variants finish in 2-3 waves.
+const PARALLEL_CONCURRENCY = 4;
 
 let configured = false;
 function ensureConfigured() {
@@ -127,23 +162,32 @@ async function generateImages({
   const errors = [];
   let seed = null;
 
-  // Run sequentially: fal.ai rate-limits on burst, and the user is already
-  // waiting for the loader UI either way. Sequential keeps the failure
-  // surface small (we can return partial results if a later chunk dies).
-  for (const chunkSize of chunks) {
-    try {
-      const r = await singleSubscribe(chosenModel, {
-        ...baseInput,
-        num_images: chunkSize,
-      });
-      if (r.request_id) requestIds.push(r.request_id);
-      if (seed === null && r.seed != null) seed = r.seed;
-      collected.push(...r.images);
-    } catch (err) {
-      errors.push(err?.message || String(err));
-      // Don't abort: keep whatever earlier chunks produced.
+  // Run chunks with bounded concurrency: each worker picks the next chunk
+  // off the queue, so we have at most PARALLEL_CONCURRENCY in flight at
+  // once. With chunk size 1, asking for 4 variants finishes in ~one call's
+  // wall time instead of four-in-a-row.
+  let nextIndex = 0;
+  async function worker() {
+    while (true) {
+      const my = nextIndex;
+      nextIndex += 1;
+      if (my >= chunks.length) return;
+      try {
+        const r = await singleSubscribe(chosenModel, {
+          ...baseInput,
+          num_images: chunks[my],
+        });
+        if (r.request_id) requestIds.push(r.request_id);
+        if (seed === null && r.seed != null) seed = r.seed;
+        collected.push(...r.images);
+      } catch (err) {
+        errors.push(err?.message || String(err));
+      }
     }
   }
+
+  const workerCount = Math.min(PARALLEL_CONCURRENCY, chunks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   // If every chunk failed, surface the first error.
   if (collected.length === 0 && errors.length) {
@@ -167,4 +211,6 @@ module.exports = {
   ALLOWED_MODELS: Array.from(ALLOWED_MODELS),
   DEFAULT_MODEL,
   MODEL_MAX_PER_REQUEST,
+  MODEL_IMAGE_INPUT,
+  imageInputKey,
 };

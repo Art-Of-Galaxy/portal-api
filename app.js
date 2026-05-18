@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const filesController = require('./files/controller');
+const s3 = require('./helper/s3_storage');
 const app = express();
 const helmet = require('helmet');
 const cors = require('cors');
@@ -10,6 +11,28 @@ const session = require('express-session');
 const passport = require('./config/passport');
 const authRouter = require('./auth/router');
 const { ensureDatabaseSchema } = require('./config/initdb');
+
+// Print storage backend once at module load. On Vercel/Lambda this fires
+// on every cold start; in dev it fires on every restart. Makes it trivial
+// to confirm whether uploads are going to S3 or falling back to local disk
+// (which is ephemeral on serverless and a common cause of "uploads vanish").
+(() => {
+  const info = s3.describeStorage();
+  if (info.storage === 's3') {
+    console.log(
+      `[storage] Uploads → S3 bucket "${info.bucket}" in ${info.region}`
+    );
+  } else {
+    console.warn(
+      `[storage] Uploads → LOCAL DISK (S3 not configured). Missing env: ${info.missing_env.join(', ')}`
+    );
+    if (filesController.IS_SERVERLESS) {
+      console.warn(
+        '[storage] Running on serverless: local disk is ephemeral, files will disappear between cold starts.'
+      );
+    }
+  }
+})();
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map((origin) => origin.trim())
@@ -80,6 +103,7 @@ app.use('/api/rebranding', require('./rebranding/router'));
 app.use('/api/ecommerce-mockups', require('./ecommerce-mockups/router'));
 app.use('/api/logo-design', require('./logo-design/router'));
 app.use('/api/files', require('./files/router'));
+app.use('/api/admin', require('./admin/router'));
 
 app.get('/', (_req, res) => {
   res.status(200).json({ status: true, message: 'AOG Portal API is running' });
@@ -98,6 +122,18 @@ app.get('/api/db-health', async (_req, res) => {
       message: 'Database initialization failed',
     });
   }
+});
+
+// Storage diagnostic — tells you whether uploads are routing to S3 or
+// falling back to local disk. Public on purpose (no secrets returned).
+app.get('/api/storage-health', (_req, res) => {
+  const info = s3.describeStorage();
+  return res.status(200).json({
+    success: true,
+    ...info,
+    is_serverless: Boolean(filesController.IS_SERVERLESS),
+    supported_extensions: s3.SUPPORTED_EXTENSIONS,
+  });
 });
 
 // Server Listen

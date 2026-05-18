@@ -74,6 +74,17 @@ const upload = multer({
 const router = express.Router();
 
 router.post('/upload', upload.single('file'), controller.upload);
+
+// Presigned-upload flow (preferred for any file > a few MB; bypasses
+// serverless body-size limits by uploading direct from browser to S3).
+router.post('/presigned-upload', controller.presignedUpload);
+router.post('/confirm-upload', controller.confirmUpload);
+
+// Presigned download: backend signs a short-lived URL with attachment
+// disposition baked in, so the frontend can navigate to it and trigger
+// a download without any client-side fetch (and therefore no CORS).
+router.post('/presigned-download', controller.presignedDownload);
+
 router.get('/', controller.list);
 router.delete('/:id', controller.remove);
 

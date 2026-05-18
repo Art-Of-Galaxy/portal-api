@@ -155,6 +155,107 @@ async function remove(req, res) {
   }
 }
 
+// Generate a short-lived presigned GET URL with a forced
+// "Content-Disposition: attachment; filename=..." so the browser
+// downloads the file when it navigates to the URL — no client-side
+// fetch / blob (and so no CORS preflight) needed.
+//
+// If the URL isn't an S3 object we control (e.g. fal.ai's CDN), we just
+// echo it back and the caller falls through to opening it in a tab.
+async function presignedDownload(req, res) {
+  try {
+    const url = safeString(req.body?.url);
+    const filename = safeString(req.body?.filename) || '';
+    if (!url) {
+      return res.status(400).json({ success: false, message: 'Missing url.' });
+    }
+
+    if (!s3.isConfigured()) {
+      return res.status(200).json({ success: true, presigned_url: url, signed: false });
+    }
+
+    const presigned = await s3.createPresignedDownloadUrl({ url, filename });
+    if (!presigned) {
+      // URL is not one of ours — return original so the frontend can
+      // still attempt navigation/blob fetch as a fallback.
+      return res.status(200).json({ success: true, presigned_url: url, signed: false });
+    }
+    return res.status(200).json({ success: true, presigned_url: presigned, signed: true });
+  } catch (err) {
+    console.error('files/presignedDownload error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+  }
+}
+
+// Step 1 of the presigned upload flow: backend signs a short-lived URL
+// the browser can PUT the file to directly. This bypasses the serverless
+// function body limit (~4.5 MB on Vercel) so PSDs / hi-res photos / PDFs
+// upload reliably.
+async function presignedUpload(req, res) {
+  try {
+    if (!s3.isConfigured()) {
+      return res.status(503).json({
+        success: false,
+        message: 'S3 is not configured on this server.',
+      });
+    }
+    const filename = safeString(req.body?.filename);
+    if (!filename) {
+      return res.status(400).json({ success: false, message: 'Missing filename.' });
+    }
+    const out = await s3.createPresignedUploadUrl({
+      prefix: 'uploads',
+      originalName: filename,
+      contentType: safeString(req.body?.content_type) || '',
+    });
+    return res.status(200).json({ success: true, ...out });
+  } catch (err) {
+    console.error('files/presignedUpload error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+  }
+}
+
+// Step 2 of the presigned flow: after the browser successfully PUTs the
+// file to S3, it calls this endpoint to record the metadata in tbl_files
+// so the file shows up in My Files / admin views.
+async function confirmUpload(req, res) {
+  try {
+    const url = safeString(req.body?.public_url);
+    const fileName = safeString(req.body?.file_name) || safeString(req.body?.filename);
+    if (!url || !fileName) {
+      return res.status(400).json({ success: false, message: 'Missing public_url or file_name.' });
+    }
+    const userEmail =
+      safeString(req.user?.email) ||
+      safeString(req.headers['x-user-email']) ||
+      safeString(req.body?.user_email);
+
+    const projectIdRaw = req.body?.project_id;
+    const projectId = projectIdRaw && /^\d+$/.test(String(projectIdRaw)) ? Number(projectIdRaw) : null;
+
+    const sizeBytesRaw = req.body?.size_bytes;
+    const sizeBytes = sizeBytesRaw && /^\d+$/.test(String(sizeBytesRaw)) ? Number(sizeBytesRaw) : null;
+
+    const record = await fileService.recordFile({
+      projectId,
+      projectName: safeString(req.body?.project_name),
+      fileName,
+      url,
+      userEmail,
+      category: safeString(req.body?.category),
+      serviceType: safeString(req.body?.service_type),
+      source: 'upload',
+      mimeType: safeString(req.body?.mime_type) || null,
+      sizeBytes,
+    });
+
+    return res.status(200).json({ success: true, file: record, url });
+  } catch (err) {
+    console.error('files/confirmUpload error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+  }
+}
+
 // One-shot maintenance: fix Content-Type / Content-Disposition on existing
 // S3 objects that were uploaded before the upload pipeline knew how to set
 // them correctly. Safe to re-run.
@@ -194,6 +295,9 @@ module.exports = {
   upload,
   list,
   remove,
+  presignedUpload,
+  confirmUpload,
+  presignedDownload,
   repairContentTypes,
   uploadsRootDir,
   ensureUploadsDir,

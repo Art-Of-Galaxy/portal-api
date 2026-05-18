@@ -17,6 +17,19 @@ async function ensureDatabaseSchema() {
   await poll.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(100);`);
   await poll.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo_url TEXT;`);
   await poll.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_data JSONB;`);
+  await poll.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await poll.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_last_login_at TIMESTAMP;`);
+
+  // Bootstrap promotion: if ADMIN_BOOTSTRAP_EMAIL is set, flip that user's
+  // is_admin flag on startup. Remove the env var afterwards. Safe to run
+  // repeatedly — it just no-ops if the user already exists and is admin.
+  const bootstrapEmail = (process.env.ADMIN_BOOTSTRAP_EMAIL || '').trim().toLowerCase();
+  if (bootstrapEmail) {
+    await poll.query(
+      `UPDATE users SET is_admin = TRUE WHERE LOWER(email) = LOWER(?)`,
+      [bootstrapEmail]
+    );
+  }
 
   await poll.query(`
     CREATE TABLE IF NOT EXISTS project_priority (

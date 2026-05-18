@@ -33,7 +33,8 @@
 // }]
 
 const path = require('path');
-const { S3Client, PutObjectCommand, ListObjectsV2Command, CopyObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command, CopyObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 let cachedClient = null;
 let cachedConfig = null;
@@ -62,6 +63,27 @@ function readConfig() {
 
 function isConfigured() {
   return readConfig().configured;
+}
+
+// Returns a snapshot of the current storage setup so callers / health
+// endpoints can show the operator whether uploads are going to S3 or
+// falling back to local disk, and exactly which env vars are missing.
+function describeStorage() {
+  const bucket = process.env.AWS_S3_BUCKET || process.env.AWS_BUCKETNAME || '';
+  const region = process.env.AWS_REGION || '';
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID || '';
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || '';
+  const missing = [];
+  if (!bucket) missing.push('AWS_S3_BUCKET (or AWS_BUCKETNAME)');
+  if (!region) missing.push('AWS_REGION');
+  if (!accessKeyId) missing.push('AWS_ACCESS_KEY_ID');
+  if (!secretAccessKey) missing.push('AWS_SECRET_ACCESS_KEY');
+  return {
+    storage: missing.length ? 'disk' : 's3',
+    bucket: bucket || null,
+    region: region || null,
+    missing_env: missing,
+  };
 }
 
 function getClient() {
@@ -121,16 +143,44 @@ function extFromContentType(contentType) {
 // Map an extension (with or without leading dot) to a content type.
 // Used as the authoritative source so we never store octet-stream when we
 // know the file is, e.g., an SVG.
+//
+// Adding a format here makes it round-trip correctly through upload (multer-s3
+// reads this map to set the S3 Content-Type) and through display (the browser
+// renders inline because the type is correct).
 const CONTENT_TYPE_BY_EXT = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
+  // Images
+  png:  'image/png',
+  jpg:  'image/jpeg',
   jpeg: 'image/jpeg',
+  jpe:  'image/jpeg',
   webp: 'image/webp',
-  gif: 'image/gif',
-  svg: 'image/svg+xml',
-  pdf: 'application/pdf',
+  gif:  'image/gif',
+  svg:  'image/svg+xml',
+  bmp:  'image/bmp',
+  tif:  'image/tiff',
+  tiff: 'image/tiff',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  avif: 'image/avif',
+  ico:  'image/x-icon',
+  // Design source files (stored as binary; browser will offer download)
+  psd:  'image/vnd.adobe.photoshop',
+  ai:   'application/postscript',
+  eps:  'application/postscript',
+  // Documents
+  pdf:  'application/pdf',
+  // Video (a few common ones — handy for AI-video service later)
+  mp4:  'video/mp4',
+  mov:  'video/quicktime',
+  webm: 'video/webm',
+  // Audio
+  mp3:  'audio/mpeg',
+  wav:  'audio/wav',
+  // Misc
   json: 'application/json',
-  txt: 'text/plain; charset=utf-8',
+  txt:  'text/plain; charset=utf-8',
+  csv:  'text/csv',
+  zip:  'application/zip',
 };
 
 function contentTypeFromExt(ext) {
@@ -208,6 +258,102 @@ async function uploadBuffer({
   );
 
   return publicUrl(key);
+}
+
+/**
+ * Generate a short-lived presigned URL the browser can PUT a file to
+ * directly. Used to bypass the serverless function body size limit on
+ * Vercel (~4.5 MB) — large files like PSDs, hi-res photos and PDFs
+ * would otherwise fail with "Failed to fetch" before they ever reach
+ * the API.
+ *
+ * Resolves to:
+ *   { upload_url, key, public_url, content_type, expires_in }
+ *
+ * The frontend PUTs the file with the SAME Content-Type header we
+ * pre-baked into the signed request. After a successful PUT it should
+ * call /api/files/confirm-upload to record metadata in tbl_files.
+ */
+async function createPresignedUploadUrl({
+  prefix = 'uploads',
+  originalName = '',
+  contentType = '',
+  expiresIn = 600, // 10 minutes
+} = {}) {
+  const client = getClient();
+  const bucket = getBucket();
+  if (!client || !bucket) throw new Error('S3 is not configured');
+
+  const inferredContentType =
+    contentTypeFromExt(safeExt(originalName)) ||
+    (isGenericContentType(contentType) ? '' : contentType) ||
+    'application/octet-stream';
+
+  const key = keyForUpload({
+    prefix,
+    originalName,
+    contentType: inferredContentType,
+  });
+
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ContentType: inferredContentType,
+    ContentDisposition: 'inline',
+    CacheControl: 'public, max-age=31536000, immutable',
+  });
+
+  const upload_url = await getSignedUrl(client, command, { expiresIn });
+
+  return {
+    upload_url,
+    key,
+    public_url: publicUrl(key),
+    content_type: inferredContentType,
+    expires_in: expiresIn,
+  };
+}
+
+// Reverse of publicUrl(): given a public S3 URL we generated, extract the
+// object key. Returns null for any other URL (so callers can fall back to
+// the original URL untouched, e.g. for legacy /uploads/ paths).
+function keyFromPublicUrl(url) {
+  const cfg = readConfig();
+  if (!cfg.configured || !url) return null;
+  const prefix = `https://${cfg.bucket}.s3.${cfg.region}.amazonaws.com/`;
+  if (typeof url !== 'string' || !url.startsWith(prefix)) return null;
+  const remainder = url.slice(prefix.length).split('?')[0].split('#')[0];
+  // The key was URL-encoded segment-by-segment in publicUrl(); reverse it.
+  return remainder.split('/').map(decodeURIComponent).join('/');
+}
+
+/**
+ * Build a short-lived presigned GET URL that forces a download with a
+ * proper filename. The browser can navigate to this URL directly — no
+ * fetch / blob / CORS dance required.
+ *
+ * If the URL isn't an S3 URL we generated (e.g. fal.ai's CDN, or a legacy
+ * /uploads/ path), we return null so the caller can fall back to the
+ * original URL.
+ */
+async function createPresignedDownloadUrl({ url, filename, expiresIn = 600 } = {}) {
+  const client = getClient();
+  const bucket = getBucket();
+  if (!client || !bucket) return null;
+
+  const key = keyFromPublicUrl(url);
+  if (!key) return null;
+
+  const safeFilename = String(filename || key.split('/').pop() || 'download')
+    .replace(/[\r\n"\\]/g, '_')
+    .slice(0, 200);
+
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ResponseContentDisposition: `attachment; filename="${safeFilename}"`,
+  });
+  return getSignedUrl(client, command, { expiresIn });
 }
 
 /**
@@ -324,14 +470,19 @@ async function repairContentTypes({ prefix = '', dryRun = false, limit = 5000 } 
 
 module.exports = {
   isConfigured,
+  describeStorage,
   getClient,
   getBucket,
   publicUrl,
   keyForUpload,
   uploadBuffer,
   uploadFromUrl,
+  createPresignedUploadUrl,
+  createPresignedDownloadUrl,
+  keyFromPublicUrl,
   repairContentTypes,
   extFromContentType,
   contentTypeFromExt,
   contentTypeFromKey,
+  SUPPORTED_EXTENSIONS: Object.keys(CONTENT_TYPE_BY_EXT),
 };
