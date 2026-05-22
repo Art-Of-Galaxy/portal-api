@@ -13,7 +13,8 @@ const { fal } = require('@fal-ai/client');
 const ALLOWED_MODELS = new Set([
   // Reference-image-aware (good for matching a style we show the model)
   'fal-ai/nano-banana',          // Google Gemini 2.5 Flash Image
-  'fal-ai/gpt-image-1',          // OpenAI GPT Image 1
+  'fal-ai/nano-banana-2',        // operator-selected variant
+  'fal-ai/nano-banana-pro',      // operator-selected variant
   'fal-ai/recraft-v3',           // logo / vector aesthetics with image_url
 
   // Text-to-image (no reference image input)
@@ -34,7 +35,8 @@ const DEFAULT_MODEL = 'fal-ai/nano-banana';
 // gets the number of variants they asked for, each with its own seed.
 const MODEL_MAX_PER_REQUEST = {
   'fal-ai/nano-banana': 1,
-  'fal-ai/gpt-image-1': 1,
+  'fal-ai/nano-banana-2': 1,
+  'fal-ai/nano-banana-pro': 1,
   'fal-ai/recraft-v3': 1,
   'fal-ai/ideogram/v2': 1,
   'fal-ai/ideogram/v3': 1,
@@ -51,9 +53,10 @@ const MODEL_MAX_PER_REQUEST = {
 //   - "image_url"  : string -> recraft v3 (single style reference)
 //   - null         : no image input supported
 const MODEL_IMAGE_INPUT = {
-  'fal-ai/nano-banana': 'image_urls',
-  'fal-ai/gpt-image-1': 'image_urls',
-  'fal-ai/recraft-v3':  'image_url',
+  'fal-ai/nano-banana':      'image_urls',
+  'fal-ai/nano-banana-2':    'image_urls',
+  'fal-ai/nano-banana-pro':  'image_urls',
+  'fal-ai/recraft-v3':       'image_url',
 };
 
 function imageInputKey(model) {

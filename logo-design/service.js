@@ -11,7 +11,8 @@ const imageGeneration = require('../helper/image_generation');
 // is the only input that matters.
 const ALLOWED_MODELS = new Set([
   'fal-ai/nano-banana',
-  'fal-ai/gpt-image-1',
+  'fal-ai/nano-banana-2',
+  'fal-ai/nano-banana-pro',
   'fal-ai/recraft-v3',
   'fal-ai/ideogram/v2',
   'fal-ai/ideogram/v3',
