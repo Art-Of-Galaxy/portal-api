@@ -2,6 +2,7 @@ const service = require('./service');
 const notionService = require('../notion/service');
 const fileService = require('../files/service');
 const s3 = require('../helper/s3_storage');
+const usageService = require('../usage/service');
 
 const REQUIRED_FORM_FIELDS = ['brand_name', 'business_description'];
 
@@ -147,6 +148,18 @@ async function generate(req, res) {
       } catch (fileErr) {
         console.error('Failed to persist generated logo files:', fileErr.message || fileErr);
       }
+    }
+
+    // Record credit usage best-effort (one unit per successfully generated image).
+    if (Array.isArray(persistedImages) && persistedImages.length) {
+      usageService.recordUsage({
+        userEmail: userEmail || null,
+        kind: 'image',
+        model: result.model,
+        service: 'logo_design',
+        units: persistedImages.length,
+        meta: { project_id: projectId },
+      }).catch(() => { /* logged downstream */ });
     }
 
     return res.status(200).json({

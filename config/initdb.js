@@ -104,6 +104,84 @@ async function ensureDatabaseSchema() {
   await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS size_bytes BIGINT;`);
   await poll.query(`ALTER TABLE tbl_files ADD COLUMN IF NOT EXISTS is_delete INTEGER NOT NULL DEFAULT 0;`);
 
+  // AI Strategist conversations. One row per chat session (per user, per
+  // service like "logo_design" or "global"). Brief holds the running
+  // structured intake the AI is building turn by turn. project_id is set
+  // once the user clicks "Generate" and we hand the brief to the relevant
+  // generator service.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_strategist_sessions (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255),
+      service VARCHAR(64) NOT NULL,
+      title VARCHAR(255),
+      brief JSONB NOT NULL DEFAULT '{}'::jsonb,
+      checklist JSONB NOT NULL DEFAULT '[]'::jsonb,
+      ready_to_generate BOOLEAN NOT NULL DEFAULT FALSE,
+      state VARCHAR(32) NOT NULL DEFAULT 'in_progress',
+      project_id INTEGER REFERENCES tbl_projects(id) ON DELETE SET NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_strategist_sessions_user ON tbl_strategist_sessions (user_email, service, updated_at DESC);`);
+
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_strategist_messages (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER NOT NULL REFERENCES tbl_strategist_sessions(id) ON DELETE CASCADE,
+      role VARCHAR(16) NOT NULL,
+      content TEXT NOT NULL,
+      suggestions JSONB,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_strategist_messages_session ON tbl_strategist_messages (session_id, id);`);
+  // Inline attachments (images, files, deep-link cards) the assistant
+  // produced via tool calls during this turn. Rendered as cards under the
+  // bubble in the chat UI.
+  await poll.query(`ALTER TABLE tbl_strategist_messages ADD COLUMN IF NOT EXISTS attachments JSONB;`);
+
+  // Usage / credits tracking. One row per billable event (LLM turn,
+  // image generation). The Header navbar reads aggregates from this; the
+  // operator can later turn raw token counts into a "credits" abstraction
+  // by tweaking the math in the usage service.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_usage (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255),
+      kind VARCHAR(32) NOT NULL,
+      model VARCHAR(100),
+      service VARCHAR(64),
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      units INTEGER NOT NULL DEFAULT 0,
+      credits NUMERIC(10, 2) NOT NULL DEFAULT 0,
+      meta JSONB,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_usage_user ON tbl_usage (user_email, created_at DESC);`);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_usage_kind ON tbl_usage (kind, created_at DESC);`);
+
+  // Multi-step quiz drafts (so the "Fill it out yourself" flow can be
+  // resumed across reloads / devices). Same brief shape as the strategist
+  // sessions so the two flows can hand off to each other.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_quiz_drafts (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255),
+      service VARCHAR(64) NOT NULL,
+      step INTEGER NOT NULL DEFAULT 1,
+      brief JSONB NOT NULL DEFAULT '{}'::jsonb,
+      state VARCHAR(32) NOT NULL DEFAULT 'in_progress',
+      project_id INTEGER REFERENCES tbl_projects(id) ON DELETE SET NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_quiz_drafts_user ON tbl_quiz_drafts (user_email, service, updated_at DESC);`);
+
   await poll.query(`
     INSERT INTO project_priority (id, name)
     VALUES

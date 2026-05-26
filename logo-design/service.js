@@ -33,7 +33,7 @@ const STYLE_DIRECTIVES = {
     'a MASCOT logo featuring an illustrated character, animal, or creature as the focal element. ' +
     'It MUST be character-driven. It must NOT be a pure wordmark or geometric monogram.',
   wordmark:
-    'a WORDMARK logo — the brand name set in carefully tuned typography, with NO symbol, NO icon, and NO illustration. ' +
+    'a WORDMARK logo: the brand name set in carefully tuned typography, with NO symbol, NO icon, and NO illustration. ' +
     'Pure typography only.',
   monogram:
     'a MONOGRAM logo built from the brand initials, geometric and balanced, optionally inside a simple containing shape. ' +
@@ -225,7 +225,7 @@ function buildPrompt(form) {
   const competitorLinks = safeArray(form.competitor_links).map(safeString).filter(Boolean);
   if (competitorLinks.length || competitorNames) {
     parts.push(
-      'Make this logo visually distinct from the brand\'s competitors — different mark style, ' +
+      'Make this logo visually distinct from the brand\'s competitors: different mark style, ' +
       'different palette, or different typography choice.'
     );
     if (competitorNames) parts.push(`Competitor notes: ${competitorNames}`);
