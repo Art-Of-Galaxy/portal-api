@@ -130,23 +130,29 @@ function nearestColorName(hex) {
 
 // Friendly names for the color-theory cards the user can tap on the form.
 // Keep these aligned with COLOR_THEORY in LogoDesignForm.jsx.
+// Each family is anchored to a representative hex. Without the hex, image
+// models routinely drift "teal" toward generic "green" or "blue" because
+// the word alone is ambiguous. Passing "teal (#0d9488)" forces a tight
+// interpretation. (Fixes end-user feedback: "I told the assistant I
+// wanted teal but the logo was generated using green".)
 const COLOR_FAMILY_LABEL = {
-  blue: 'blue',
-  purple: 'purple',
-  pink: 'pink',
-  red: 'red',
-  orange: 'orange',
-  yellow: 'yellow',
-  green: 'green',
-  teal: 'teal',
-  grey: 'grey',
+  blue:   'blue (#2563eb)',
+  purple: 'purple (#7c3aed)',
+  pink:   'pink (#ec4899)',
+  red:    'red (#dc2626)',
+  orange: 'orange (#ea580c)',
+  yellow: 'yellow (#eab308)',
+  green:  'green (#16a34a)',
+  teal:   'teal (#0d9488)',
+  grey:   'grey (#64748b)',
 };
 
 function describeColors(form) {
   const items = [];
 
-  // 1) Color families the user tapped from the theory cards. Pure semantic
-  //    intent ("blue", "warm orange") rather than a specific hex.
+  // 1) Color families the user tapped from the theory cards (or that the
+  //    AI strategist captured from the conversation). Each family now
+  //    ships with a hex anchor so the image model can't drift the shade.
   safeArray(form.selected_colors).forEach((id) => {
     const family = COLOR_FAMILY_LABEL[String(id || '').toLowerCase()];
     if (family) items.push(family);
@@ -194,7 +200,14 @@ function buildPrompt(form) {
 
   const colors = describeColors(form);
   if (colors.length) {
-    parts.push(`Color palette (use these specifically): ${colors.join(', ')}.`);
+    // Repeat the exact color names AND their hex anchors twice so the
+    // image model treats them as hard constraints, not suggestions. Each
+    // family name is paired with its hex (e.g. "teal (#0d9488)") to stop
+    // shade-drift between similar families like teal vs green.
+    parts.push(
+      `Color palette (MUST use exactly these colors, no substitutions): ${colors.join(', ')}. ` +
+      `The dominant logo color must be from this palette only.`
+    );
   }
 
   const typo = safeArray(form.selected_typography)

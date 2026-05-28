@@ -142,6 +142,25 @@ async function ensureDatabaseSchema() {
   // bubble in the chat UI.
   await poll.query(`ALTER TABLE tbl_strategist_messages ADD COLUMN IF NOT EXISTS attachments JSONB;`);
 
+  // Revision requests on generated outputs. The "Request revision"
+  // button on the Logo Design result page (and any future service
+  // result page) posts here with the user's notes + which concept they
+  // want changed. The AOG strategist picks these up offline to action.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_project_revisions (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER REFERENCES tbl_projects(id) ON DELETE SET NULL,
+      user_email VARCHAR(255),
+      service_type VARCHAR(64),
+      concept_index INTEGER,
+      notes TEXT NOT NULL,
+      state VARCHAR(32) NOT NULL DEFAULT 'open',
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_revisions_project ON tbl_project_revisions (project_id, created_at DESC);`);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_revisions_user ON tbl_project_revisions (user_email, created_at DESC);`);
+
   // Usage / credits tracking. One row per billable event (LLM turn,
   // image generation). The Header navbar reads aggregates from this; the
   // operator can later turn raw token counts into a "credits" abstraction

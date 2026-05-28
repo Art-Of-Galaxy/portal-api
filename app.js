@@ -49,7 +49,7 @@ app.use(cors({
   },
   credentials: true,
   optionsSuccessStatus: 200,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Database-Id', 'X-User-Email']
 }));
 
@@ -105,6 +105,7 @@ app.use('/api/logo-design', require('./logo-design/router'));
 app.use('/api/strategist', require('./strategist/router'));
 app.use('/api/quiz-drafts', require('./quiz-drafts/router'));
 app.use('/api/usage', require('./usage/router'));
+app.use('/api/revisions', require('./revisions/router'));
 app.use('/api/files', require('./files/router'));
 app.use('/api/admin', require('./admin/router'));
 

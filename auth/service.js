@@ -3,7 +3,7 @@ const auth_helper = require('../helper/auth_helper');
 const jwt = require('jsonwebtoken');
 const jwtSecret = process.env.JWT_SECRET || process.env.SECRET_KEY || 'default_secret';
 const PROFILE_SELECT = `
-    SELECT id, name, email, phone, dob, profile_photo_url, onboarding_data, created_at, updated_at
+    SELECT id, name, email, phone, dob, profile_photo_url, onboarding_data, is_admin, created_at, updated_at
     FROM users
 `;
 
@@ -135,6 +135,45 @@ exports.getProfileByEmail = async (email) => {
     );
 
     return rows && rows.length ? rows[0] : null;
+};
+
+// True when an account with this email already exists. Used by the Google
+// OAuth callback to decide whether the user can "sign in" or needs to
+// "sign up" before continuing.
+exports.userExistsByEmail = async (email) => {
+    const profile = await exports.getProfileByEmail(email);
+    return Boolean(profile);
+};
+
+// Create-only Google user. Returns the freshly created profile, or the
+// existing one if the email is already known. Stores the Google avatar
+// when we have one and the user hasn't set their own photo yet.
+exports.createGoogleUser = async ({ email, name, photoUrl }) => {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) return null;
+
+    const existing = await exports.getProfileByEmail(normalizedEmail);
+    if (existing) {
+        // If we got a Google photo and the profile has none, persist it.
+        if (photoUrl && !existing.profile_photo_url) {
+            const db = await db_helper.get_db_connection();
+            await db.query(
+                `UPDATE users SET profile_photo_url = ?, updated_at = NOW() WHERE LOWER(email) = LOWER(?)`,
+                [photoUrl, normalizedEmail]
+            );
+            return exports.getProfileByEmail(normalizedEmail);
+        }
+        return existing;
+    }
+
+    const db = await db_helper.get_db_connection();
+    await db.query(
+        `INSERT INTO users (email, name, profile_photo_url, active)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT (email) DO NOTHING`,
+        [normalizedEmail, name || defaultNameFromEmail(normalizedEmail), photoUrl || null]
+    );
+    return exports.getProfileByEmail(normalizedEmail);
 };
 
 exports.getOrCreateProfileByEmail = async (email, name) => {

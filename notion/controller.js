@@ -220,15 +220,13 @@ let add_task = async (req, res) => {
 let get_task = async (req, res) => {
   try {
     const response = await notionService.get_task(req, res);
-    if (response.success) {
-      res.status(200).json({
-        message: 'Tasks fetched successfully',
-        tasks: response.data,
-        success: true
-      });
-    } else {
-      res.status(404).json({ message: response.message });
-    }
+    // Always 200 with a tasks array. Empty list means the user has no
+    // tasks yet, which is the normal first-run state, not a 404.
+    return res.status(200).json({
+      message: 'Tasks fetched successfully',
+      tasks: Array.isArray(response?.data) ? response.data : [],
+      success: true,
+    });
   } catch (error) {
     console.error('Error fetching tasks:', error.response?.data || error.message);
     res.status(500).json({ message: 'Internal server error', error: error.response?.data });

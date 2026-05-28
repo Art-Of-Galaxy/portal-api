@@ -32,10 +32,15 @@ const TURN_SCHEMA = {
     },
     suggestions: {
       type: 'array',
-      maxItems: 4,
+      maxItems: 6,
       items: { type: 'string' },
       description:
-        'Up to 4 short quick-reply chip labels the user can tap as answers. Empty if a free-text reply is required.',
+        'Up to 6 short quick-reply chip labels the user can tap as answers. Empty if a free-text reply is required.',
+    },
+    multi_select: {
+      type: 'boolean',
+      description:
+        'Set true when the question can have MORE THAN ONE answer (e.g. "which of these apply to your business?" or "which platforms do you sell on?"). When true, the UI lets the user tick multiple chips and submit them together. Default false (single choice / chip auto-submits).',
     },
     brief: {
       type: 'object',
@@ -141,11 +146,12 @@ function sanitizeTurn(turn) {
     turn.suggestions = turn.suggestions
       .map((s) => (typeof s === 'string' ? stripEmDashes(s) : null))
       .filter(Boolean)
-      .slice(0, 4);
+      .slice(0, 6);
   }
   if (typeof turn.route !== 'string') turn.route = '';
   // Whitelist routes to portal paths only (defense against hallucinated URLs).
   if (turn.route && !/^\/[A-Za-z0-9/_-]*$/.test(turn.route)) turn.route = '';
+  turn.multi_select = Boolean(turn.multi_select);
   return turn;
 }
 
@@ -495,6 +501,7 @@ async function runTurn({ session, userMessage, model, userEmail }) {
       ? safeParsed.reply
       : fallbackReply,
     suggestions: Array.isArray(safeParsed.suggestions) ? safeParsed.suggestions : [],
+    multi_select: Boolean(safeParsed.multi_select),
     brief: mergedBrief,
     checklist: Array.isArray(safeParsed.checklist) && safeParsed.checklist.length
       ? safeParsed.checklist
@@ -506,12 +513,19 @@ async function runTurn({ session, userMessage, model, userEmail }) {
     route: typeof safeParsed.route === 'string' ? safeParsed.route : '',
   });
 
+  // Persist a chip_meta attachment when multi_select is on so that a
+  // page reload re-renders the chips in multi-select mode (the
+  // suggestions array on its own doesn't carry that flag).
+  const persistedAttachments = turn.multi_select
+    ? [...producedAttachments, { type: 'chip_meta', multi_select: true }]
+    : producedAttachments;
+
   await appendMessage({
     sessionId: session.id,
     role: 'assistant',
     content: turn.reply,
     suggestions: turn.suggestions,
-    attachments: producedAttachments,
+    attachments: persistedAttachments,
   });
 
   await persistTurn({
@@ -526,12 +540,13 @@ async function runTurn({ session, userMessage, model, userEmail }) {
     session_id: session.id,
     reply: turn.reply,
     suggestions: turn.suggestions,
+    multi_select: turn.multi_select,
     brief: turn.brief,
     checklist: turn.checklist,
     ready_to_generate: turn.ready_to_generate,
     summary: turn.summary,
     route: turn.route,
-    attachments: producedAttachments,
+    attachments: persistedAttachments,
   };
 }
 

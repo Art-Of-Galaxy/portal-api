@@ -341,13 +341,13 @@ exports.get_task = async (req, res) => {
           return reject({ success: false, message: 'Database error', error: err.message });
         }
 
-        if (result.length > 0) {
-          console.log('Tasks fetched successfully');
-          return resolve({ success: true, data: result });
-        }
-
-        console.log('No tasks found for project ID:', projectId);
-        return resolve({ success: false, message: 'No tasks found for this project' });
+        // Empty list is a valid result, not an error. The previous
+        // `success: false` here forced the controller to respond 404,
+        // which made the dashboard log a console error every load even
+        // for new users with no tasks yet.
+        const tasks = Array.isArray(result) ? result : [];
+        console.log(`Fetched ${tasks.length} tasks for project ID:`, projectId);
+        return resolve({ success: true, data: tasks });
       });
     } catch (error) {
       console.error('Error fetching tasks:', error);
