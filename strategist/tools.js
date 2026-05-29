@@ -46,6 +46,12 @@ const TOOL_DEFINITIONS = {
       },
     },
   },
+  get_user_profile: {
+    name: 'get_user_profile',
+    description:
+      "Returns the calling client's portal profile (name, email, brand / company name, industry, business description, social handles, goals, services they're interested in, and any onboarding context they provided). Use this when you need to personalise the conversation, recall what business they run, or recommend a service tailored to them. Cheap, idempotent, safe to call once at the start of a topic.",
+    input_schema: { type: 'object', properties: {} },
+  },
   list_user_projects: {
     name: 'list_user_projects',
     description:
@@ -80,6 +86,30 @@ const TOOL_DEFINITIONS = {
   },
 };
 
+async function execute_get_user_profile({ userEmail }) {
+  if (!userEmail) return { note: 'No user_email available, cannot scope profile.' };
+  const rows = await poll.query(
+    `SELECT id, name, email, phone, dob, profile_photo_url, onboarding_data, is_admin, created_at
+       FROM users
+      WHERE LOWER(email) = LOWER($1)
+      LIMIT 1`,
+    [userEmail]
+  );
+  const row = (rows || [])[0];
+  if (!row) return { note: 'No profile row found for this user.' };
+  return {
+    name: row.name,
+    email: row.email,
+    phone: row.phone || null,
+    profile_photo_url: row.profile_photo_url || null,
+    is_admin: Boolean(row.is_admin),
+    member_since: row.created_at,
+    // onboarding_data is a free-form JSONB blob captured during signup
+    // — keep the model-facing structure shallow so it can read it.
+    onboarding: row.onboarding_data || null,
+  };
+}
+
 async function execute_list_user_projects({ userEmail, input }) {
   if (!userEmail) return { rows: [], note: 'No user_email available, cannot scope projects.' };
   const limit = Math.min(Math.max(Number(input?.limit) || 10, 1), 25);
@@ -109,24 +139,35 @@ async function execute_list_user_files({ userEmail, input }) {
   if (!userEmail) return { rows: [], note: 'No user_email available, cannot scope files.' };
   const limit = Math.min(Math.max(Number(input?.limit) || 10, 1), 25);
   const rows = await poll.query(
-    `SELECT id, file_name, url, category, service_type, source, created_at
+    `SELECT id, file_name, url, category, service_type, source, mime_type, created_at
        FROM tbl_files
       WHERE user_email = $1 AND is_delete = 0
       ORDER BY id DESC
       LIMIT $2`,
     [userEmail, limit]
   );
+  const files = (rows || []).map((r) => ({
+    id: r.id,
+    name: r.file_name,
+    url: r.url,
+    category: r.category,
+    service_type: r.service_type,
+    source: r.source || 'upload',
+    mime_type: r.mime_type || null,
+    created_at: r.created_at,
+  }));
   return {
-    count: (rows || []).length,
-    files: (rows || []).map((r) => ({
-      id: r.id,
-      name: r.file_name,
-      url: r.url,
-      category: r.category,
-      service_type: r.service_type,
-      source: r.source || 'upload',
-      created_at: r.created_at,
-    })),
+    count: files.length,
+    files,
+    // The runTurn loop will hoist this onto the assistant message so the
+    // chat renders these files as inline cards (image thumbs + names).
+    // Hidden from the model's reply text (it just needs to know the
+    // count, not re-paste URLs).
+    _attachment: files.length ? {
+      type: 'file_list',
+      title: 'Your recent files',
+      files: files.slice(0, 12),
+    } : null,
   };
 }
 
@@ -156,11 +197,34 @@ function inferExtensionFromContentType(contentType, fallbackUrl) {
   return 'png';
 }
 
+// Reject obvious placeholder strings the LLM sometimes invents when it
+// hasn't actually collected a brief yet. Generating with "Your Brand"
+// produces useless output and confuses the end user, so we fail loudly
+// and the manager has to go back and ask for the real name.
+const PLACEHOLDER_BRAND_NAMES = new Set([
+  'your brand', 'brand', 'the brand', 'brand name', 'placeholder',
+  'company', 'company name', 'test', 'test brand', 'example', 'example brand',
+  'sample', 'sample brand', 'tbd', 'tba', 'n/a', 'na',
+]);
+function isPlaceholderBrandName(name) {
+  const lower = String(name || '').trim().toLowerCase();
+  if (!lower) return true;
+  return PLACEHOLDER_BRAND_NAMES.has(lower);
+}
+
 async function execute_generate_logo_design({ userEmail, input }) {
   const brandName = String(input?.brand_name || '').trim();
   const businessDescription = String(input?.business_description || '').trim();
-  if (!brandName) return { error: 'brand_name is required to generate a logo.' };
-  if (!businessDescription) return { error: 'business_description is required.' };
+  if (!brandName || isPlaceholderBrandName(brandName)) {
+    return {
+      error: 'brand_name looks like a placeholder. Ask the user for the real brand name before calling this tool again.',
+    };
+  }
+  if (!businessDescription || businessDescription.length < 8) {
+    return {
+      error: 'business_description is missing or too short. Ask the user to describe what the brand does (one sentence) before calling this tool again.',
+    };
+  }
 
   const form = {
     brand_name: brandName,
@@ -287,6 +351,7 @@ async function execute_generate_logo_design({ userEmail, input }) {
 
 const EXECUTORS = {
   generate_logo_design: execute_generate_logo_design,
+  get_user_profile: execute_get_user_profile,
   list_user_projects: execute_list_user_projects,
   list_user_files: execute_list_user_files,
 };

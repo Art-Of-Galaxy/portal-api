@@ -76,6 +76,11 @@ const TURN_SCHEMA = {
       description:
         'Optional deep-link path to navigate the user to (e.g. "/new-projects/branding-design/logo"). ONLY set when the user has clearly chosen a service to start, or you are recommending they jump to a specific portal page. Empty string or omit otherwise.',
     },
+    chat_title: {
+      type: 'string',
+      description:
+        'A short, descriptive title for THIS conversation, 2 to 5 words, no quotes. Set this on the FIRST turn as soon as the user has revealed what they want (e.g. "Bean There logo", "Streetwear brand strategy", "File audit"). Update it later only if the topic clearly shifts. Empty string means do not change the title. This becomes the conversation label in the sidebar; without it every chat reads as "Untitled chat".',
+    },
   },
 };
 
@@ -152,6 +157,17 @@ function sanitizeTurn(turn) {
   // Whitelist routes to portal paths only (defense against hallucinated URLs).
   if (turn.route && !/^\/[A-Za-z0-9/_-]*$/.test(turn.route)) turn.route = '';
   turn.multi_select = Boolean(turn.multi_select);
+  // Chat title: 60 chars max, single line, no surrounding quotes. Empty
+  // string means "leave the existing title alone".
+  if (typeof turn.chat_title === 'string') {
+    turn.chat_title = stripEmDashes(turn.chat_title)
+      .replace(/[\r\n]+/g, ' ')
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .trim()
+      .slice(0, 60);
+  } else {
+    turn.chat_title = '';
+  }
   return turn;
 }
 
@@ -219,6 +235,24 @@ async function createSession({ userEmail, service }) {
   return loadSession(session.id);
 }
 
+// The DB columns are TIMESTAMP WITHOUT TIME ZONE and we write via NOW()
+// which is UTC. node-pg reads them back by parsing the string AS LOCAL
+// TIME, so the resulting Date silently shifts by the backend server's
+// TZ offset (we saw ~5h of drift in chats created from an IST server,
+// which exactly matches the UTC+5:30 offset). This helper takes the
+// pg-returned Date (or string) and produces a real UTC ISO so the
+// frontend's `Date.now() - then` math is correct regardless of where
+// the backend is hosted.
+function asUtcIso(value) {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(d.getTime())) return null;
+  // Shift forward by the local TZ offset so the Date's UTC components
+  // match what was actually stored. getTimezoneOffset returns minutes
+  // and is positive for west of UTC, negative for east.
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString();
+}
+
 async function loadSession(id) {
   // poll.query() unwraps SELECT results to the raw rows array (see
   // config/dbconfig.js adaptResult), so we operate on it directly.
@@ -229,6 +263,8 @@ async function loadSession(id) {
   );
   if (!rows || !rows.length) return null;
   const session = rows[0];
+  session.created_at = asUtcIso(session.created_at);
+  session.updated_at = asUtcIso(session.updated_at);
 
   const messages = await poll.query(
     `SELECT id, role, content, suggestions, attachments, created_at
@@ -241,7 +277,7 @@ async function loadSession(id) {
     content: row.content,
     suggestions: row.suggestions || [],
     attachments: row.attachments || [],
-    created_at: row.created_at,
+    created_at: asUtcIso(row.created_at),
   }));
   return session;
 }
@@ -266,7 +302,10 @@ async function listSessions({ userEmail, service }) {
       LIMIT 50`;
   // SELECT returns raw rows array via the poll wrapper.
   const rows = await poll.query(sql, params);
-  return rows || [];
+  return (rows || []).map((r) => ({
+    ...r,
+    updated_at: asUtcIso(r.updated_at),
+  }));
 }
 
 async function appendMessage({ sessionId, role, content, suggestions, attachments }) {
@@ -309,6 +348,30 @@ async function markCompleted({ sessionId, projectId }) {
       WHERE id = $1`,
     [sessionId, projectId || null]
   );
+}
+
+// Soft delete: flip state to 'deleted'. listSessions already filters
+// state <> 'deleted', so the chat disappears from the sidebar without
+// losing history (audit / undo later if we want).
+async function deleteSession({ sessionId, userEmail }) {
+  // Scope by user_email when we have it, so a user can only delete
+  // their own sessions. When no email is supplied (anonymous), only
+  // require the id.
+  if (userEmail) {
+    await poll.query(
+      `UPDATE tbl_strategist_sessions
+          SET state = 'deleted', updated_at = NOW()
+        WHERE id = $1 AND LOWER(user_email) = LOWER($2)`,
+      [sessionId, userEmail]
+    );
+  } else {
+    await poll.query(
+      `UPDATE tbl_strategist_sessions
+          SET state = 'deleted', updated_at = NOW()
+        WHERE id = $1`,
+      [sessionId]
+    );
+  }
 }
 
 // ---------- LLM turn ----------
@@ -511,6 +574,7 @@ async function runTurn({ session, userMessage, model, userEmail }) {
     ready_to_generate: Boolean(safeParsed.ready_to_generate) || computeReadyFallback(domain, mergedBrief),
     summary: typeof safeParsed.summary === 'string' ? safeParsed.summary : '',
     route: typeof safeParsed.route === 'string' ? safeParsed.route : '',
+    chat_title: typeof safeParsed.chat_title === 'string' ? safeParsed.chat_title : '',
   });
 
   // Persist a chip_meta attachment when multi_select is on so that a
@@ -528,12 +592,15 @@ async function runTurn({ session, userMessage, model, userEmail }) {
     attachments: persistedAttachments,
   });
 
+  // Title precedence: explicit chat_title from the LLM > brand_name on
+  // the running brief > leave whatever the column already has. The
+  // SQL update uses COALESCE, so passing null keeps the existing title.
   await persistTurn({
     sessionId: session.id,
     brief: turn.brief,
     checklist: turn.checklist,
     readyToGenerate: turn.ready_to_generate,
-    title: turn.brief?.brand_name || null,
+    title: turn.chat_title?.trim() || turn.brief?.brand_name || null,
   });
 
   return {
@@ -546,6 +613,10 @@ async function runTurn({ session, userMessage, model, userEmail }) {
     ready_to_generate: turn.ready_to_generate,
     summary: turn.summary,
     route: turn.route,
+    // The persisted title (LLM-supplied chat_title > brand_name > the
+    // session's current title). Surfaced so AIManager can update the
+    // sidebar row immediately without a re-fetch.
+    title: turn.chat_title?.trim() || turn.brief?.brand_name || session.title || null,
     attachments: persistedAttachments,
   };
 }
@@ -558,5 +629,6 @@ module.exports = {
   listSessions,
   runTurn,
   markCompleted,
+  deleteSession,
   isKnownService,
 };

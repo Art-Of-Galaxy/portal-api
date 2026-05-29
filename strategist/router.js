@@ -17,4 +17,8 @@ router.post('/sessions/:id/turn', controller.turn);
 // generator service (project_id is the resulting tbl_projects row).
 router.post('/sessions/:id/complete', controller.complete);
 
+// Soft delete: removes the chat from the sidebar but keeps the row in
+// case we want an undo later.
+router.delete('/sessions/:id', controller.destroy);
+
 module.exports = router;

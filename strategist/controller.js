@@ -92,6 +92,20 @@ async function turn(req, res) {
   }
 }
 
+async function destroy(req, res) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid session id' });
+    }
+    await service.deleteSession({ sessionId: id, userEmail: userEmailFrom(req) });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error('strategist/delete error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+  }
+}
+
 async function complete(req, res) {
   try {
     const id = Number(req.params.id);
@@ -113,4 +127,5 @@ module.exports = {
   listSessions,
   turn,
   complete,
+  destroy,
 };
