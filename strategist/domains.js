@@ -75,7 +75,116 @@ You are filling out a structured Logo Design brief. The brief has 5 stages: bran
 
 You will return JSON. The JSON contains your next user-facing reply, suggested quick-reply chips (so the user can tap an answer instead of typing), the updated running brief, the checklist status, and whether the brief is complete enough to generate a logo.`;
 
+// ---------- Brand Guidelines ----------
+
+const BRAND_GUIDELINES_CHECKLIST = [
+  { id: 'brand',        label: 'Your brand' },
+  { id: 'audience',     label: 'Your audience' },
+  { id: 'personality',  label: 'Brand personality' },
+  { id: 'visual',       label: 'Visual direction' },
+  { id: 'references',   label: 'References' },
+  { id: 'deliverables', label: 'Deliverables' },
+];
+
+const BRAND_GUIDELINES_BRIEF_SHAPE = {
+  brand_name:          { type: 'string', label: 'Brand name', required: true, step: 'brand' },
+  product_description: { type: 'string', label: 'What you offer and who it is for', required: true, step: 'brand' },
+  audience_age: {
+    type: 'enum',
+    label: 'Audience age group',
+    required: false,
+    step: 'audience',
+    options: ['gen_z', 'millennials', 'professionals', 'mixed'],
+  },
+  lifestyle: {
+    type: 'enum_array',
+    label: 'Audience lifestyle',
+    required: false,
+    step: 'audience',
+    options: ['urban', 'wellness', 'creative', 'active', 'travel', 'family'],
+  },
+  personality: {
+    type: 'enum',
+    label: 'Brand personality',
+    required: false,
+    step: 'personality',
+    options: ['bold', 'warm', 'playful', 'premium', 'rebellious', 'calm'],
+  },
+  voice_tone: {
+    type: 'enum',
+    label: 'Voice and tone',
+    required: false,
+    step: 'personality',
+    options: ['conversational', 'direct', 'educational', 'aspirational'],
+  },
+  color_mood: {
+    type: 'enum_array',
+    label: 'Color direction',
+    required: false,
+    step: 'visual',
+    options: ['dark_bold', 'warm_vibrant', 'cool_trustworthy', 'fresh_natural', 'bold_electric', 'clean_neutral'],
+  },
+  typography_feel: {
+    type: 'enum',
+    label: 'Typography feel',
+    required: false,
+    step: 'visual',
+    options: ['serif', 'sans', 'script', 'modern', 'display', 'condensed'],
+  },
+  admired_brand:   { type: 'string', label: 'A brand you admire', required: false, step: 'references' },
+  main_competitor: { type: 'string', label: 'Main competitor', required: false, step: 'references' },
+  differentiation: {
+    type: 'enum',
+    label: 'How you want to stand out',
+    required: false,
+    step: 'references',
+    options: ['more_affordable', 'more_premium', 'more_sustainable', 'more_innovative', 'more_community', 'more_niche'],
+  },
+  extras: {
+    type: 'enum_array',
+    label: 'Extra deliverables',
+    required: false,
+    step: 'deliverables',
+    options: ['social_templates', 'presentation_deck', 'document_templates', 'favicon'],
+  },
+  additional_notes: { type: 'string', label: 'Additional notes', required: false, step: 'deliverables' },
+};
+
+const BRAND_GUIDELINES_PERSONA = `You are the AOG Brand Strategist, a warm, decisive senior brand designer working inside the Art of Galaxy portal. You are interviewing a client to build a full Brand Guidelines brief.
+
+Style rules you MUST follow in every reply:
+- Sound like a senior strategist, not a chatbot. Warm, conversational, decisive.
+- NEVER use em dashes (—) or double-dashes (--). They read as AI generated. Use a period, comma, colon, parentheses, "and" or "or" instead.
+- Keep replies to 1 to 3 short sentences. No long paragraphs.
+- One question at a time. Build on what the user already said.
+- If the user gives partial info, acknowledge it and ask for the missing piece. Do not re-ask what they already answered.
+- When the user says "I don't know" or "you decide", make a reasonable assumption, state it briefly, and move on.
+- Light, tasteful emoji is welcome (1 max per reply). Not required.
+
+MULTI-SELECT QUESTIONS:
+- Set multi_select to true any time the answer can reasonably be MORE THAN ONE item. The UI will let the user tick multiple chips and submit them as a single combined answer.
+- For Brand Guidelines specifically, the following questions should ALWAYS be multi_select:true with the full option set as chips:
+  * "What lifestyle best fits your audience?" — chips: Urban and Trend-Led, Health and Wellness, Creative and Entrepreneurial, Active and Athletic, Travel and Adventure, Family and Home-Centered
+  * "What is the color mood?" — chips: Dark and Bold, Warm and Vibrant, Cool and Trustworthy, Fresh and Natural, Bold and Electric, Clean and Neutral
+  * "Any extra deliverables you want included?" — chips: Social media templates, Presentation deck, Document templates, Favicon and app icon
+- Single-answer questions (brand name, personality, voice, typography, audience age group, differentiation) stay multi_select:false so chips auto-submit on tap.
+
+You are filling out a structured Brand Guidelines brief. The brief has 6 stages: brand, audience, personality, visual, references, deliverables. Walk through them roughly in that order, but follow the client's lead if they jump ahead.
+
+You will return JSON. The JSON contains your next user-facing reply, suggested quick-reply chips (so the user can tap an answer instead of typing), the updated running brief, the checklist status, and whether the brief is complete enough to generate the guidelines.`;
+
 const DOMAINS = {
+  brand_guidelines: {
+    service_label: 'Brand Guidelines',
+    persona: BRAND_GUIDELINES_PERSONA,
+    checklist: BRAND_GUIDELINES_CHECKLIST,
+    brief_shape: BRAND_GUIDELINES_BRIEF_SHAPE,
+    greeting:
+      "Hey! I'm your AOG brand strategist. Let's build something remarkable together. \u{1F33F}\n\nFirst, what's the name of your brand, or do you have a working name in mind?",
+    greeting_chips: ['✍️ Type your brand name...', "Still deciding"],
+    min_required: ['brand_name', 'product_description'],
+  },
+
   logo_design: {
     service_label: 'Logo Design',
     persona: `${LOGO_DESIGN_PERSONA}

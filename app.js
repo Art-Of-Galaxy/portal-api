@@ -102,6 +102,7 @@ app.use('/api/brand-guidelines', require('./brand-guidelines/router'));
 app.use('/api/rebranding', require('./rebranding/router'));
 app.use('/api/ecommerce-mockups', require('./ecommerce-mockups/router'));
 app.use('/api/logo-design', require('./logo-design/router'));
+app.use('/api/ugc-ads', require('./ugc-ads/router'));
 app.use('/api/strategist', require('./strategist/router'));
 app.use('/api/quiz-drafts', require('./quiz-drafts/router'));
 app.use('/api/usage', require('./usage/router'));

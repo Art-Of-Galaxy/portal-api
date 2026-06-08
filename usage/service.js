@@ -13,6 +13,9 @@ const CREDIT_RATES = {
   llm_input_per_1k:  1,
   llm_output_per_1k: 4,
   image_per_unit:    25,
+  // Videos are an order of magnitude more expensive than logos. Adjust
+  // when we have real Higgsfield pricing locked in.
+  video_per_unit:    400,
 };
 
 function llmCredits(inputTokens, outputTokens) {
@@ -23,6 +26,10 @@ function llmCredits(inputTokens, outputTokens) {
 
 function imageCredits(units) {
   return (Number(units) || 0) * CREDIT_RATES.image_per_unit;
+}
+
+function videoCredits(units) {
+  return (Number(units) || 0) * CREDIT_RATES.video_per_unit;
 }
 
 async function recordUsage({
@@ -39,6 +46,7 @@ async function recordUsage({
     let credits = 0;
     if (kind === 'llm') credits = llmCredits(inputTokens, outputTokens);
     else if (kind === 'image') credits = imageCredits(units);
+    else if (kind === 'video') credits = videoCredits(units);
 
     await poll.query(
       `INSERT INTO tbl_usage
