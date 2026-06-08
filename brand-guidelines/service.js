@@ -744,8 +744,27 @@ async function generateBrandGuidelines({ form, requestedModel }) {
   };
 }
 
+// Map slugs → render functions so the controller can serve any doc on
+// demand from the persisted spec (and the frontend can re-render fresh
+// HTML for view/download even when the S3 upload at generation time
+// silently failed).
+const DOC_RENDERERS = {
+  'brand-guidelines': renderGuidelinesDoc,
+  'color-system':     renderColorSystemDoc,
+  'brand-voice':      renderVoiceDoc,
+  'typography-guide': renderTypeDoc,
+};
+
+function renderDocBySlug({ slug, brandName, spec }) {
+  const fn = DOC_RENDERERS[slug];
+  if (!fn) return null;
+  return fn({ brandName, spec });
+}
+
 module.exports = {
   generateBrandGuidelines,
+  renderDocBySlug,
+  DOC_SLUGS: Object.keys(DOC_RENDERERS),
   ALLOWED_MODELS: Array.from(ALLOWED_MODELS),
   DEFAULT_MODEL,
 };

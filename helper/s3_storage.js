@@ -177,6 +177,8 @@ const CONTENT_TYPE_BY_EXT = {
   mp3:  'audio/mpeg',
   wav:  'audio/wav',
   // Misc
+  html: 'text/html; charset=utf-8',
+  htm:  'text/html; charset=utf-8',
   json: 'application/json',
   txt:  'text/plain; charset=utf-8',
   csv:  'text/csv',
