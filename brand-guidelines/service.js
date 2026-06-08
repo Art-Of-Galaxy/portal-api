@@ -151,10 +151,8 @@ const OUTPUT_SCHEMA = {
     },
     social_briefs: {
       type: 'array',
-      minItems: 4,
-      maxItems: 4,
       items: { type: 'string' },
-      description: 'EXACTLY 4 distinct social media post briefs for a fal.ai image model. Each one MUST describe a visually different post (different composition, different subject, different short headline rendered in the image). Suggested mix: (1) Hero brand post with the brand tagline as the headline. (2) Quote or testimonial card with a 4 to 7 word brand-voice phrase. (3) Product or service feature with a benefit-led headline. (4) Lifestyle or mood moment with an aspirational 3 to 5 word headline. Every brief must include the headline string in quotes, the composition, and the dominant palette color. Headlines must all be DIFFERENT.',
+      description: 'Return EXACTLY 4 elements (not fewer, not more) of distinct social media post briefs for a fal.ai image model. Each one MUST describe a visually different post (different composition, different subject, different short headline rendered in the image). Required mix in this order: (1) Hero brand post with the brand tagline as the headline. (2) Quote or testimonial card with a 4 to 7 word brand-voice phrase. (3) Product or service feature with a benefit-led headline. (4) Lifestyle or mood moment with an aspirational 3 to 5 word headline. Every brief MUST include the headline string in double quotes, the composition, and the dominant palette color. Headlines MUST all be DIFFERENT.',
     },
     deliverables: {
       type: 'array',
