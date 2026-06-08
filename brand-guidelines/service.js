@@ -42,6 +42,7 @@ Your output must:
 - Keep voice and tone descriptions concrete enough that a copywriter could ship from them (length: 1 to 3 sentences each).
 - Always return a deliverables list that aligns with what the client asked for plus standard brand-guideline outputs.
 - For social_briefs you MUST produce 4 visually distinct posts (different composition, different subject, different headline phrase). They share the brand palette and mood but should never look like 4 takes of the same image.
+- If the intake form contains a brand_assets array, the client uploaded those files (logos, product photos, mood references, existing brand collateral). Name the most relevant ones in your recommendations, lean on their visual cues for the palette and mood you propose, and call out in social_briefs how the product or asset should be featured.
 
 You will be given:
 1. A JSON object containing the client's submitted intake form.
@@ -254,6 +255,30 @@ const SOCIAL_FALLBACK_ANGLES = [
   { headline: 'Live the moment.',  composition: 'lifestyle moment with a candid composition, atmospheric lighting, brand color as the dominant tone' },
 ];
 
+// Pull HTTPS image URLs out of the client's uploaded brand_assets so we
+// can feed them to fal.ai as reference images (nano-banana etc. condition
+// strongly on these, so the generated logo / social posts can resemble
+// the product the client uploaded). Capped at 4 to keep prompts focused.
+function uploadedImageUrls(form) {
+  const assets = Array.isArray(form?.brand_assets) ? form.brand_assets : [];
+  const urls = assets
+    .map((a) => (typeof a === 'string' ? a : a?.url))
+    .filter((u) => typeof u === 'string' && /^https?:\/\//i.test(u))
+    .filter((u) => /\.(png|jpe?g|webp|gif|bmp|svg)(\?|$|#)/i.test(u));
+  return [...new Set(urls)].slice(0, 4);
+}
+
+// Build the model-specific extra_input payload that injects reference
+// images. Falls back to no extras when the chosen model does not accept
+// image inputs (so the call still goes through with just the prompt).
+function withReferenceImages(extras, model, urls) {
+  const key = imageGeneration.imageInputKey(model);
+  if (!key || !Array.isArray(urls) || urls.length === 0) return extras;
+  if (key === 'image_urls') return { ...extras, image_urls: urls.slice(0, 3) };
+  if (key === 'image_url')  return { ...extras, image_url: urls[0] };
+  return extras;
+}
+
 function buildSocialPromptFromBrief({ brandName, spec, brief }) {
   const palette = paletteForPrompt(spec);
   const moods = Array.isArray(spec?.mood_keywords) ? spec.mood_keywords.slice(0, 3).join(', ') : '';
@@ -290,9 +315,11 @@ function buildSocialPrompts({ brandName, spec }) {
 // Generate one image per prompt (parallel). Used for the social kit so the
 // 4 outputs are visually distinct posts instead of 4 variants of the same
 // scene. Mirrors generateImagePack's S3 mirroring + error collection.
-async function generateImagePackFromPrompts({ prompts, brandSlug, kind, model }) {
+async function generateImagePackFromPrompts({ prompts, brandSlug, kind, model, referenceImageUrls = [] }) {
   const list = Array.isArray(prompts) ? prompts.filter(Boolean) : [];
   if (!list.length) return { model: model || LOGO_MODEL, images: [], errors: [] };
+
+  const baseExtras = withReferenceImages({ aspect_ratio: '1:1', output_format: 'png' }, model || LOGO_MODEL, referenceImageUrls);
 
   const results = await Promise.all(list.map(async (prompt, idx) => {
     try {
@@ -301,7 +328,7 @@ async function generateImagePackFromPrompts({ prompts, brandSlug, kind, model })
         model: model || LOGO_MODEL,
         num_images: 1,
         image_size: 'square_hd',
-        extra_input: { aspect_ratio: '1:1', output_format: 'png' },
+        extra_input: baseExtras,
       });
       const img = (r.images || [])[0];
       if (!img) return { img: null, err: 'no image returned', resolvedModel: r.model };
@@ -339,14 +366,15 @@ async function generateImagePackFromPrompts({ prompts, brandSlug, kind, model })
   return { model: resolvedModel, images, errors };
 }
 
-async function generateImagePack({ prompt, count, brandSlug, kind, model }) {
+async function generateImagePack({ prompt, count, brandSlug, kind, model, referenceImageUrls = [] }) {
   try {
+    const extras = withReferenceImages({ aspect_ratio: '1:1', output_format: 'png' }, model || LOGO_MODEL, referenceImageUrls);
     const result = await imageGeneration.generateImages({
       prompt,
       model: model || LOGO_MODEL,
       num_images: count,
       image_size: 'square_hd',
-      extra_input: { aspect_ratio: '1:1', output_format: 'png' },
+      extra_input: extras,
     });
     let images = result.images || [];
     if (s3.isConfigured() && images.length) {
@@ -650,10 +678,14 @@ async function generateBrandGuidelines({ form, requestedModel }) {
   // posts, not 4 takes of the same scene.
   const logoPrompt = buildLogoPrompt({ brandName, spec });
   const socialPrompts = buildSocialPrompts({ brandName, spec });
+  // Any product / brand assets the client uploaded are fed to fal.ai as
+  // reference images so the generated logos and social mockups can
+  // actually feature the product instead of a generic stand-in.
+  const referenceImageUrls = uploadedImageUrls(form);
 
   const [logoPack, socialPack, guidelinesUpload, colorUpload, voiceUpload, typeUpload] = await Promise.all([
-    generateImagePack({ prompt: logoPrompt, count: 4, brandSlug, kind: 'logo', model: LOGO_MODEL }),
-    generateImagePackFromPrompts({ prompts: socialPrompts, brandSlug, kind: 'social', model: SOCIAL_MODEL }),
+    generateImagePack({ prompt: logoPrompt, count: 4, brandSlug, kind: 'logo', model: LOGO_MODEL, referenceImageUrls }),
+    generateImagePackFromPrompts({ prompts: socialPrompts, brandSlug, kind: 'social', model: SOCIAL_MODEL, referenceImageUrls }),
     uploadHtmlDoc({ brandSlug, name: 'brand-guidelines', html: renderGuidelinesDoc({ brandName, spec }) }),
     uploadHtmlDoc({ brandSlug, name: 'color-system',     html: renderColorSystemDoc({ brandName, spec }) }),
     uploadHtmlDoc({ brandSlug, name: 'brand-voice',      html: renderVoiceDoc({ brandName, spec }) }),
