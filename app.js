@@ -99,6 +99,8 @@ app.use('/api/authentication', authRouter);
 app.use('/api/notion', require('./notion/router'));
 app.use('/api/staff', require('./staff/router'));
 app.use('/api/brand-guidelines', require('./brand-guidelines/router'));
+app.use('/api/printing-design', require('./printing-design/router'));
+app.use('/api/packaging-design', require('./packaging-design/router'));
 app.use('/api/rebranding', require('./rebranding/router'));
 app.use('/api/ecommerce-mockups', require('./ecommerce-mockups/router'));
 app.use('/api/logo-design', require('./logo-design/router'));

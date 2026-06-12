@@ -7,6 +7,8 @@ const { poll } = require('../config/dbconfig');
 const ALLOWED_SERVICES = new Set([
   'logo_design',
   'brand_guidelines',
+  'printing_design',
+  'packaging_design',
   'rebranding',
   'ecommerce_mockups',
 ]);

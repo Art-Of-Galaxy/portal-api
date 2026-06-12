@@ -173,7 +173,220 @@ You are filling out a structured Brand Guidelines brief. The brief has 6 stages:
 
 You will return JSON. The JSON contains your next user-facing reply, suggested quick-reply chips (so the user can tap an answer instead of typing), the updated running brief, the checklist status, and whether the brief is complete enough to generate the guidelines.`;
 
+// ---------- Packaging Design ----------
+
+const PACKAGING_DESIGN_CHECKLIST = [
+  { id: 'type',    label: 'Package type' },
+  { id: 'style',   label: 'Style and variant' },
+  { id: 'product', label: 'Product info' },
+  { id: 'specs',   label: 'Size and finish' },
+  { id: 'files',   label: 'Files and notes' },
+];
+
+const PACKAGING_DESIGN_BRIEF_SHAPE = {
+  package_type: {
+    type: 'enum',
+    label: 'Package type',
+    required: true,
+    step: 'type',
+    options: ['box', 'label', 'shrink', 'bags'],
+  },
+  subtype:  { type: 'string', label: 'Style number or name', required: false, step: 'style' },
+  brand_name:   { type: 'string', label: 'Brand name',   required: true, step: 'product' },
+  product_name: { type: 'string', label: 'Product name', required: true, step: 'product' },
+  product_desc: { type: 'string', label: 'Product description', required: false, step: 'product' },
+  sku_count:    { type: 'string', label: 'Number of SKUs or variants', required: false, step: 'product' },
+  dim_w:    { type: 'string', label: 'Width', required: false, step: 'specs' },
+  dim_h:    { type: 'string', label: 'Height', required: false, step: 'specs' },
+  dim_d:    { type: 'string', label: 'Depth', required: false, step: 'specs' },
+  dim_unit: {
+    type: 'enum',
+    label: 'Dimension unit',
+    required: false,
+    step: 'specs',
+    options: ['in', 'mm'],
+  },
+  finishes: {
+    type: 'enum_array',
+    label: 'Finish and coating',
+    required: false,
+    step: 'specs',
+    options: ['matte', 'gloss', 'lamination', 'spot_uv', 'embossing', 'hologram', 'hot_stamping', 'soft_touch', 'window_cutout', 'white_support', 'full_color_print'],
+  },
+  bag_features: {
+    type: 'enum_array',
+    label: 'Bag features',
+    required: false,
+    step: 'specs',
+    options: ['zipper', 'tear_notch', 'child_resistant', 'hanging_hole', 'rounded_corners'],
+  },
+  eco: {
+    type: 'enum',
+    label: 'Eco-friendly materials',
+    required: false,
+    step: 'specs',
+    options: ['yes', 'no', 'open'],
+  },
+  has_files: {
+    type: 'enum',
+    label: 'Has dieline or brand files',
+    required: false,
+    step: 'files',
+    options: ['yes', 'no'],
+  },
+  brand_assets: { type: 'file_array', label: 'Brand or dieline uploads', required: false, step: 'files' },
+  inner_notes:  { type: 'string', label: 'Inner product sizes and notes', required: false, step: 'files' },
+  notes:        { type: 'string', label: 'Additional notes', required: false, step: 'files' },
+};
+
+const PACKAGING_DESIGN_PERSONA = `You are the AOG Packaging Specialist AI, a senior packaging designer at Art of Galaxy, helping a client scope a packaging-design project (box / folding carton, label, shrink sleeve, or bag / pouch).
+
+Style rules you MUST follow in every reply:
+- Sound like a senior packaging designer, warm and decisive. Not a chatbot.
+- NEVER use em dashes (—) or double-dashes (--). They read as AI generated. Use a period, comma, colon, parentheses, "and" or "or" instead.
+- Keep replies to 1 to 3 short sentences. No long paragraphs.
+- One question at a time. Build on what the user already said.
+- If the user gives partial info, acknowledge it and ask for the missing piece. Do not re-ask what they already answered.
+- When the user says "I don't know" or "you decide", make a reasonable assumption, state it briefly, and move on.
+- Light, tasteful emoji is welcome (1 max per reply). Not required.
+
+MULTI-SELECT QUESTIONS:
+- Set multi_select to true any time the answer can reasonably be MORE THAN ONE item (especially finishes and bag features).
+- For Packaging Design specifically the following questions should ALWAYS be multi_select:true with the full option set as chips:
+  * "Finish and coating?" chips: Matte, Gloss, Lamination, Spot UV, Embossing, Hologram, Hot Stamping or Foil, Soft Touch, Window cutout, White Support
+  * For bags only: "Bag features?" chips: Zipper, Tear Notch, Child Resistant, Hanging Hole, Rounded Corners
+- Single-answer questions (package type, eco yes or no, has dieline yes or no) stay multi_select:false so chips auto-submit on tap.
+
+The brief has 5 stages: type, style, product, specs (size and finish), files. Walk them roughly in order but follow the client's lead. For boxes the style stage covers tuck-end / sleeve / display / etc; for labels it covers standard vs peel-off; for shrink it covers full-body vs cap vs tamper band; for bags it covers stand-up gusset, zipper variants, etc.
+
+You will return JSON. The JSON contains your next user-facing reply, suggested quick-reply chips, the updated running brief, the checklist status, and whether the brief is complete enough to submit.`;
+
+// ---------- Printing Design ----------
+
+const PRINTING_DESIGN_CHECKLIST = [
+  { id: 'format',  label: 'Print format' },
+  { id: 'specs',   label: 'Size and specs' },
+  { id: 'project', label: 'Your project' },
+  { id: 'content', label: 'Content' },
+  { id: 'style',   label: 'Style and finish' },
+];
+
+const PRINTING_DESIGN_BRIEF_SHAPE = {
+  type: {
+    type: 'enum',
+    label: 'Print format',
+    required: true,
+    step: 'format',
+    options: ['brochure', 'ebook', 'flyer', 'poster'],
+  },
+  size:         { type: 'string', label: 'Paper size (e.g. A4, Letter, 18x24in)', required: false, step: 'specs' },
+  fold: {
+    type: 'enum',
+    label: 'Fold style (brochure only)',
+    required: false,
+    step: 'specs',
+    options: ['bifold', 'trifold', 'zfold', 'gatefold', 'rollfold'],
+  },
+  ebook_title:    { type: 'string', label: 'Ebook title',       required: false, step: 'specs' },
+  ebook_topic:    { type: 'string', label: 'Ebook topic',       required: false, step: 'specs' },
+  ebook_audience: { type: 'string', label: 'Ebook audience',    required: false, step: 'specs' },
+  ebook_goal: {
+    type: 'enum',
+    label: 'Ebook main objective',
+    required: false,
+    step: 'specs',
+    options: ['educate', 'leads', 'attract_clients', 'train_team', 'establish_authority'],
+  },
+  ebook_length: {
+    type: 'enum',
+    label: 'Ebook length',
+    required: false,
+    step: 'specs',
+    options: ['under_20', '20_to_50', '50_to_100', '100_plus', 'unknown'],
+  },
+  ebook_language: {
+    type: 'enum',
+    label: 'Ebook language',
+    required: false,
+    step: 'specs',
+    options: ['en', 'es', 'bilingual', 'other'],
+  },
+  brand_name: { type: 'string', label: 'Brand or company name',    required: true,  step: 'project' },
+  purpose:    { type: 'string', label: 'What this piece is for',   required: true,  step: 'project' },
+  audience:   { type: 'string', label: 'Target audience',          required: false, step: 'project' },
+  content_status: {
+    type: 'enum',
+    label: 'Content status',
+    required: false,
+    step: 'content',
+    options: ['ready', 'draft', 'need'],
+  },
+  content_text: { type: 'string',       label: 'Content paste',         required: false, step: 'content' },
+  content_uploads: { type: 'file_array', label: 'Content uploads',      required: false, step: 'content' },
+  ctas:         { type: 'string',       label: 'CTAs (ebook)',          required: false, step: 'content' },
+  visual_tone: {
+    type: 'enum_array',
+    label: 'Visual tone',
+    required: false,
+    step: 'style',
+    options: ['bold', 'clean', 'warm', 'elegant', 'playful', 'dark', 'minimal'],
+  },
+  has_assets: {
+    type: 'enum',
+    label: 'Brand assets available?',
+    required: false,
+    step: 'style',
+    options: ['yes', 'no', 'logo_only'],
+  },
+  brand_assets: { type: 'file_array', label: 'Brand asset uploads',   required: false, step: 'style' },
+  refs:         { type: 'string',     label: 'Reference URLs',        required: false, step: 'style' },
+  notes:        { type: 'string',     label: 'Additional notes',      required: false, step: 'style' },
+};
+
+const PRINTING_DESIGN_PERSONA = `You are the AOG Print Designer AI, a senior print designer at Art of Galaxy, helping a client scope a printing-design project (brochure, ebook, flyer, or poster).
+
+Style rules you MUST follow in every reply:
+- Sound like a senior print designer, warm and decisive. Not a chatbot.
+- NEVER use em dashes (—) or double-dashes (--). They read as AI generated. Use a period, comma, colon, parentheses, "and" or "or" instead.
+- Keep replies to 1 to 3 short sentences. No long paragraphs.
+- One question at a time. Build on what the user already said.
+- If the user gives partial info, acknowledge it and ask for the missing piece. Do not re-ask what they already answered.
+- When the user says "I don't know" or "you decide", make a reasonable assumption, state it briefly, and move on.
+- Light, tasteful emoji is welcome (1 max per reply). Not required.
+
+MULTI-SELECT QUESTIONS:
+- Set multi_select to true any time the answer can reasonably be MORE THAN ONE item (especially visual tone).
+- For Printing Design specifically the following questions should ALWAYS be multi_select:true with the full option set as chips:
+  * "How should this piece feel?" (visual tone): Bold and impactful, Clean and professional, Warm and friendly, Elegant and premium, Playful and creative, Dark and edgy, Minimal and editorial
+- Single-answer questions (format choice, content status, brand assets yes or no) stay multi_select:false so chips auto-submit on tap.
+
+The brief has 5 stages: format, specs, project, content, style. Walk them roughly in order but follow the client's lead if they jump ahead. For ebook the specs stage covers title and topic and audience and length and language. For brochure the specs stage covers size and fold. For flyer and poster the specs stage just covers size.
+
+You will return JSON. The JSON contains your next user-facing reply, suggested quick-reply chips, the updated running brief, the checklist status, and whether the brief is complete enough to submit.`;
+
 const DOMAINS = {
+  packaging_design: {
+    service_label: 'Packaging Design',
+    persona: PACKAGING_DESIGN_PERSONA,
+    checklist: PACKAGING_DESIGN_CHECKLIST,
+    brief_shape: PACKAGING_DESIGN_BRIEF_SHAPE,
+    greeting:
+      "Hey! I'm your AOG packaging specialist. Let's build your packaging brief. \u{1F4E6}\n\nFirst, what type of packaging do you need? Box, label, shrink sleeve, or bag / pouch?",
+    greeting_chips: ['Box / Folding carton', 'Label / Roll label', 'Shrink sleeve', 'Bag / Pouch'],
+    min_required: ['package_type', 'brand_name', 'product_name'],
+  },
+
+  printing_design: {
+    service_label: 'Printing Design',
+    persona: PRINTING_DESIGN_PERSONA,
+    checklist: PRINTING_DESIGN_CHECKLIST,
+    brief_shape: PRINTING_DESIGN_BRIEF_SHAPE,
+    greeting:
+      "Hey! I'm your AOG print designer. Let's scope your print project. \u{1F5A8}️\n\nFirst, what type of print material do you need? Brochure, ebook, flyer, or poster?",
+    greeting_chips: ['Brochure', 'Ebook / Lead magnet', 'Flyer', 'Poster'],
+    min_required: ['type', 'brand_name', 'purpose'],
+  },
+
   brand_guidelines: {
     service_label: 'Brand Guidelines',
     persona: BRAND_GUIDELINES_PERSONA,
