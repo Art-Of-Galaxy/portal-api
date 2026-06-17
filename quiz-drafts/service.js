@@ -9,6 +9,7 @@ const ALLOWED_SERVICES = new Set([
   'brand_guidelines',
   'printing_design',
   'packaging_design',
+  'social_media',
   'rebranding',
   'ecommerce_mockups',
 ]);

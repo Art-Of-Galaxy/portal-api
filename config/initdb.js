@@ -220,6 +220,77 @@ async function ensureDatabaseSchema() {
     ON CONFLICT (id) DO UPDATE
       SET name = EXCLUDED.name;
   `);
+
+  // ---------- Social Media Management ----------
+
+  // Connected platform accounts. Tokens are AES-256-GCM encrypted at rest
+  // via helper/social_tokens.js; we never store plaintext.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_social_connections (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255) NOT NULL,
+      platform VARCHAR(32) NOT NULL,
+      account_id VARCHAR(128) NOT NULL,
+      account_handle VARCHAR(128),
+      account_name VARCHAR(255),
+      access_token_enc TEXT NOT NULL,
+      refresh_token_enc TEXT,
+      scope TEXT,
+      meta JSONB,
+      expires_at TIMESTAMP,
+      last_validated_at TIMESTAMP,
+      state VARCHAR(16) NOT NULL DEFAULT 'connected',
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      UNIQUE (user_email, platform, account_id)
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_social_conn_user ON tbl_social_connections (user_email, state);`);
+
+  // Each generated piece of content. brief_json holds the user's input,
+  // spec_json holds the Claude output, assets_json holds the generated
+  // image/video URLs.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_social_posts (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255) NOT NULL,
+      project_id INTEGER,
+      content_type VARCHAR(32) NOT NULL,
+      brief_json JSONB,
+      spec_json JSONB,
+      assets_json JSONB,
+      caption TEXT,
+      hashtags TEXT,
+      platforms TEXT,
+      status VARCHAR(16) NOT NULL DEFAULT 'draft',
+      scheduled_for TIMESTAMP,
+      published_at TIMESTAMP,
+      batch_parent_id INTEGER REFERENCES tbl_social_posts(id) ON DELETE SET NULL,
+      metrics_json JSONB,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_social_posts_user_state ON tbl_social_posts (user_email, status, updated_at DESC);`);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_social_posts_due ON tbl_social_posts (status, scheduled_for) WHERE status = 'scheduled';`);
+
+  // Audit log: one row per publish attempt per platform. The scheduler
+  // reads recent failures to back off and to surface "x failed to publish"
+  // chips in the UI.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_social_post_runs (
+      id SERIAL PRIMARY KEY,
+      post_id INTEGER NOT NULL REFERENCES tbl_social_posts(id) ON DELETE CASCADE,
+      platform VARCHAR(32) NOT NULL,
+      started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMP,
+      state VARCHAR(16) NOT NULL DEFAULT 'running',
+      platform_post_id VARCHAR(255),
+      error_code VARCHAR(64),
+      error_message TEXT
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_social_post_runs_post ON tbl_social_post_runs (post_id, started_at DESC);`);
 }
 
 module.exports = {

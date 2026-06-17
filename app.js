@@ -101,6 +101,8 @@ app.use('/api/staff', require('./staff/router'));
 app.use('/api/brand-guidelines', require('./brand-guidelines/router'));
 app.use('/api/printing-design', require('./printing-design/router'));
 app.use('/api/packaging-design', require('./packaging-design/router'));
+app.use('/api/social-media', require('./social-media/router'));
+app.use('/api/social-connections', require('./social-connections/router'));
 app.use('/api/rebranding', require('./rebranding/router'));
 app.use('/api/ecommerce-mockups', require('./ecommerce-mockups/router'));
 app.use('/api/logo-design', require('./logo-design/router'));
@@ -160,6 +162,15 @@ function initializeDatabaseSchema() {
 async function startServer() {
   try {
     await initializeDatabaseSchema();
+    // Kick off the social-media post scheduler (cron, every minute).
+    // Disable on per-instance basis with SOCIAL_SCHEDULER=off.
+    try { require('./social-media/scheduler').start(); }
+    catch (err) { console.error('Failed to start social-media scheduler:', err.message || err); }
+    // Daily health probe for stored social connection tokens. Flips
+    // hard-failed tokens to state='reauth_required' so the UI prompts.
+    try { require('./social-connections/health').start(); }
+    catch (err) { console.error('Failed to start connection health probe:', err.message || err); }
+
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

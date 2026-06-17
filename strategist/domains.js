@@ -173,6 +173,94 @@ You are filling out a structured Brand Guidelines brief. The brief has 6 stages:
 
 You will return JSON. The JSON contains your next user-facing reply, suggested quick-reply chips (so the user can tap an answer instead of typing), the updated running brief, the checklist status, and whether the brief is complete enough to generate the guidelines.`;
 
+// ---------- E-Commerce Mockups ----------
+
+const ECOMMERCE_MOCKUPS_CHECKLIST = [
+  { id: 'platform', label: 'Platform and product' },
+  { id: 'audience', label: 'Target customer' },
+  { id: 'claims',   label: 'Key claims' },
+  { id: 'visual',   label: 'Visual style' },
+  { id: 'assets',   label: 'Assets and notes' },
+];
+
+const ECOMMERCE_MOCKUPS_BRIEF_SHAPE = {
+  platforms: {
+    type: 'enum_array',
+    label: 'Platforms',
+    required: true,
+    step: 'platform',
+    options: ['amazon', 'shopify', 'etsy', 'woocommerce'],
+  },
+  other_platform: { type: 'string', label: 'Other platform', required: false, step: 'platform' },
+  product_name:   { type: 'string', label: 'Product name', required: true, step: 'platform' },
+  product_description: { type: 'string', label: 'Product description', required: true, step: 'platform' },
+  product_category: {
+    type: 'enum',
+    label: 'Product category',
+    required: false,
+    step: 'platform',
+    options: ['supplements', 'food_beverage', 'beauty', 'pet', 'home_kitchen', 'sports_fitness', 'electronics', 'baby_kids', 'other'],
+  },
+  target_customer: { type: 'string', label: 'Target customer', required: false, step: 'audience' },
+  claims:          { type: 'string', label: 'Key selling points', required: false, step: 'claims' },
+  certifications: {
+    type: 'enum_array',
+    label: 'Certifications',
+    required: false,
+    step: 'claims',
+    options: ['fda', 'organic', 'non_gmo', 'vegan', 'cruelty_free', 'gluten_free', 'kosher', 'made_in_usa', 'keto'],
+  },
+  background_styles: {
+    type: 'enum_array',
+    label: 'Background style',
+    required: false,
+    step: 'visual',
+    options: ['white', 'lifestyle', 'minimal', 'branded'],
+  },
+  mockup_types: {
+    type: 'enum_array',
+    label: 'Mockup types',
+    required: false,
+    step: 'visual',
+    options: ['hero', 'closeup', 'feature', 'lifestyle', 'packaging', 'aplus'],
+  },
+  has_brand: {
+    type: 'enum',
+    label: 'Brand assets available?',
+    required: false,
+    step: 'assets',
+    options: ['yes', 'logo_only', 'no'],
+  },
+  product_uploads: { type: 'file_array', label: 'Product image uploads', required: false, step: 'assets' },
+  brand_assets:    { type: 'file_array', label: 'Brand asset uploads',   required: false, step: 'assets' },
+  refs:  { type: 'string', label: 'Reference images or moodboard', required: false, step: 'assets' },
+  notes: { type: 'string', label: 'Additional notes', required: false, step: 'assets' },
+};
+
+const ECOMMERCE_MOCKUPS_PERSONA = `You are the AOG E-Commerce Mockup Specialist AI, a senior creative director at Art of Galaxy, helping a client scope a high-converting product mockup set for Amazon, Shopify, Etsy, WooCommerce, or similar marketplaces.
+
+Style rules you MUST follow in every reply:
+- Sound like a senior creative director, warm and decisive. Not a chatbot.
+- NEVER use em dashes (—) or double-dashes (--). They read as AI generated. Use a period, comma, colon, parentheses, "and" or "or" instead.
+- Keep replies to 1 to 3 short sentences. No long paragraphs.
+- One question at a time. Build on what the user already said.
+- If the user gives partial info, acknowledge it and ask for the missing piece. Do not re-ask what they already answered.
+- When the user says "I don't know" or "you decide", make a reasonable assumption, state it briefly, and move on.
+- Light, tasteful emoji is welcome (1 max per reply). Not required.
+
+MULTI-SELECT QUESTIONS:
+- Set multi_select to true any time the answer can reasonably be MORE THAN ONE item.
+- For E-Commerce Mockups specifically, the following questions should ALWAYS be multi_select:true with the full option set as chips:
+  * "Which platforms are the mockups for?" chips: Amazon, Shopify, Etsy, WooCommerce, Multiple platforms
+  * "Certifications worth featuring?" chips: FDA compliant, Certified organic, Non-GMO, Vegan, Cruelty-free, Gluten-free, Kosher, Made in USA, Keto-friendly, None
+  * "Background style?" chips: White / Transparent, Lifestyle / Scene, Minimalist / Clean, Branded color
+  * "Mockup types needed?" chips: Hero image, Product close-ups, Feature highlights, Lifestyle scenes, Packaging flat-lay, A+ content
+- Single-answer questions (product name, target customer, brand assets yes or no) stay multi_select:false so chips auto-submit on tap.
+
+The brief has 5 stages: platform, audience, claims, visual, assets. Walk them roughly in that order but follow the client's lead. Always ask about product photos in the assets stage, those photos become the reference for the generated mockups.
+
+You will return JSON. The JSON contains your next user-facing reply, suggested quick-reply chips, the updated running brief, the checklist status, and whether the brief is complete enough to generate the mockups.`;
+
 // ---------- Packaging Design ----------
 
 const PACKAGING_DESIGN_CHECKLIST = [
@@ -374,6 +462,17 @@ const DOMAINS = {
       "Hey! I'm your AOG packaging specialist. Let's build your packaging brief. \u{1F4E6}\n\nFirst, what type of packaging do you need? Box, label, shrink sleeve, or bag / pouch?",
     greeting_chips: ['Box / Folding carton', 'Label / Roll label', 'Shrink sleeve', 'Bag / Pouch'],
     min_required: ['package_type', 'brand_name', 'product_name'],
+  },
+
+  ecommerce_mockups: {
+    service_label: 'E-Commerce Mockups',
+    persona: ECOMMERCE_MOCKUPS_PERSONA,
+    checklist: ECOMMERCE_MOCKUPS_CHECKLIST,
+    brief_shape: ECOMMERCE_MOCKUPS_BRIEF_SHAPE,
+    greeting:
+      "Hey! I'm your AOG e-commerce mockup specialist. Let's build something that converts. \u{1F6D2}\n\nFirst, which platform are the mockups for?",
+    greeting_chips: ['Amazon', 'Shopify', 'Etsy', 'WooCommerce', 'Multiple platforms'],
+    min_required: ['platforms', 'product_name', 'product_description'],
   },
 
   printing_design: {
