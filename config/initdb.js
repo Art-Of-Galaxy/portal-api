@@ -291,6 +291,106 @@ async function ensureDatabaseSchema() {
     );
   `);
   await poll.query(`CREATE INDEX IF NOT EXISTS idx_social_post_runs_post ON tbl_social_post_runs (post_id, started_at DESC);`);
+
+  // ---------- Shopify Blog Engine ----------
+
+  // Connected Shopify stores. Same token-encryption pattern as
+  // tbl_social_connections (helper/social_tokens.js handles the crypto).
+  // Each user can connect many stores; (user_email, shop_domain) is the
+  // de-dup key. The Admin API token issued by Shopify on app install
+  // does NOT expire on its own, but we keep state + last_validated_at
+  // so the health probe can flip it to 'reauth_required' if the store
+  // ever uninstalls the app.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_shopify_connections (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255) NOT NULL,
+      shop_domain VARCHAR(255) NOT NULL,
+      shop_name VARCHAR(255),
+      shop_id VARCHAR(64),
+      access_token_enc TEXT NOT NULL,
+      scope TEXT,
+      meta JSONB,
+      default_blog_id VARCHAR(64),
+      default_blog_title VARCHAR(255),
+      last_validated_at TIMESTAMP,
+      state VARCHAR(16) NOT NULL DEFAULT 'connected',
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      UNIQUE (user_email, shop_domain)
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_shopify_conn_user ON tbl_shopify_connections (user_email, state);`);
+
+  // One row per generated article. brief_json is the user's input,
+  // spec_json is Claude's structured output, assets_json holds the
+  // featured image URL + any user-uploaded inline images. Status flow:
+  // draft -> scheduled -> publishing -> published / failed. The
+  // scheduler atomically claims rows where status='scheduled' AND
+  // scheduled_for <= NOW().
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_blog_articles (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255) NOT NULL,
+      shop_connection_id INTEGER REFERENCES tbl_shopify_connections(id) ON DELETE SET NULL,
+      autopilot_id INTEGER,
+      mode VARCHAR(32) NOT NULL DEFAULT 'single',
+      keyword VARCHAR(255),
+      brief_json JSONB,
+      spec_json JSONB,
+      assets_json JSONB,
+      title TEXT,
+      handle VARCHAR(255),
+      meta_title TEXT,
+      meta_description TEXT,
+      tags TEXT,
+      seo_score INTEGER,
+      word_count INTEGER,
+      status VARCHAR(16) NOT NULL DEFAULT 'draft',
+      scheduled_for TIMESTAMP,
+      published_at TIMESTAMP,
+      shopify_article_id VARCHAR(64),
+      shopify_blog_id VARCHAR(64),
+      shopify_url TEXT,
+      error_code VARCHAR(64),
+      error_message TEXT,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_blog_articles_user_status ON tbl_blog_articles (user_email, status, updated_at DESC);`);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_blog_articles_due ON tbl_blog_articles (status, scheduled_for) WHERE status = 'scheduled';`);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_blog_articles_autopilot ON tbl_blog_articles (autopilot_id) WHERE autopilot_id IS NOT NULL;`);
+
+  // Autopilot configs: a keyword bank + cadence + voice tied to a
+  // shop. The scheduler keeps the queue full by drafting a new article
+  // every time the running queued+scheduled count drops below the
+  // 'queue depth' goal. One autopilot per (user_email, shop_connection_id)
+  // for v1.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_blog_autopilots (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255) NOT NULL,
+      shop_connection_id INTEGER NOT NULL REFERENCES tbl_shopify_connections(id) ON DELETE CASCADE,
+      blog_id VARCHAR(64),
+      blog_title VARCHAR(255),
+      keywords_json JSONB NOT NULL,
+      cadence VARCHAR(16) NOT NULL,
+      publish_time VARCHAR(16) NOT NULL DEFAULT '08:00',
+      timezone VARCHAR(64) DEFAULT 'UTC',
+      voice_json JSONB,
+      intent VARCHAR(32),
+      length VARCHAR(16),
+      queue_depth INTEGER NOT NULL DEFAULT 5,
+      status VARCHAR(16) NOT NULL DEFAULT 'active',
+      next_publish_at TIMESTAMP,
+      last_drafted_at TIMESTAMP,
+      published_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_blog_autopilots_active ON tbl_blog_autopilots (status, next_publish_at) WHERE status = 'active';`);
 }
 
 module.exports = {

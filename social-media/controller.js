@@ -152,6 +152,55 @@ async function publishNow(req, res) {
   }
 }
 
+// Single-post fetch. The Hub's content cards link to
+// /new-projects/social/create?post=ID; the Create flow loads the row
+// via this endpoint and jumps to the Preview / Schedule step so the
+// user doesn't have to regenerate the brief from scratch.
+async function getPost(req, res) {
+  try {
+    const userEmail = getUserEmail(req);
+    if (!userEmail) return res.status(400).json({ success: false, message: 'user_email is required' });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, message: 'Invalid post id' });
+
+    const rows = await poll.query(
+      `SELECT id, user_email, project_id, content_type, brief_json, spec_json,
+              assets_json, caption, hashtags, platforms, status,
+              scheduled_for, published_at, batch_parent_id, metrics_json,
+              created_at, updated_at
+         FROM tbl_social_posts
+        WHERE id = $1 AND user_email = $2
+        LIMIT 1`,
+      [id, userEmail]
+    );
+    const row = (rows || [])[0];
+    if (!row) return res.status(404).json({ success: false, message: 'Post not found' });
+
+    const post = {
+      id: row.id,
+      project_id: row.project_id,
+      content_type: row.content_type,
+      brief: row.brief_json || {},
+      spec: row.spec_json || {},
+      assets: row.assets_json || {},
+      caption: row.caption || '',
+      hashtags: row.hashtags || '',
+      platforms: String(row.platforms || '').split(',').filter(Boolean),
+      status: row.status,
+      scheduled_for: row.scheduled_for,
+      published_at: row.published_at,
+      batch_parent_id: row.batch_parent_id,
+      metrics: row.metrics_json || null,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+    return res.status(200).json({ success: true, post });
+  } catch (err) {
+    console.error('social-media/getPost error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Load failed' });
+  }
+}
+
 async function library(req, res) {
   try {
     const userEmail = getUserEmail(req);
@@ -250,4 +299,4 @@ async function runScheduler(_req, res) {
   }
 }
 
-module.exports = { generate, save, publishNow, library, stats, runScheduler };
+module.exports = { generate, save, publishNow, library, stats, getPost, runScheduler };
