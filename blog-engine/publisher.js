@@ -47,10 +47,11 @@ async function markStatus(id, status, extra = {}) {
 }
 
 // Push featured image to Shopify Files first, then create the article
-// pointing at the Shopify-hosted URL. We could let Shopify fetch the
-// fal.ai/S3 URL directly via Article.image.url, but mirroring to
-// Shopify Files makes the URL permanent and avoids upstream CDN flakes.
-async function uploadFeaturedToShopify({ conn, featured, title }) {
+// pointing at the Shopify-hosted URL. We do NOT fall back to the raw
+// fal.ai URL: those are signed/expiring, and Shopify's articleCreate
+// rejects unreachable URLs with "Image upload failed. Invalid URL".
+// Better to publish image-less than to fail the whole publish.
+async function uploadFeaturedToShopify({ conn, featured }) {
   if (!featured?.url) return null;
   try {
     const result = await adminApi.uploadImageToShopifyFiles({
@@ -59,10 +60,12 @@ async function uploadFeaturedToShopify({ conn, featured, title }) {
       sourceUrl: featured.url,
       filename: `featured-${Date.now()}.png`,
     });
-    return result?.url || featured.url;
+    if (result?.url) return result.url;
+    console.warn('[blog-engine] Shopify Files upload returned no URL; publishing without featured image. source:', featured.url);
+    return null;
   } catch (err) {
-    console.warn('[blog-engine] uploadImageToShopifyFiles failed, falling back to source URL:', err.message || err);
-    return featured.url;
+    console.warn('[blog-engine] uploadImageToShopifyFiles failed; publishing without featured image. source:', featured.url, 'reason:', err.message || err);
+    return null;
   }
 }
 
@@ -115,8 +118,15 @@ async function publishArticle({ articleId, publishImmediately = true }) {
 
   let featuredUrl = null;
   if (featured?.url) {
-    featuredUrl = await uploadFeaturedToShopify({ conn, featured, title: article.title });
+    featuredUrl = await uploadFeaturedToShopify({ conn, featured });
   }
+  console.log('[blog-engine] publish ready', {
+    articleId,
+    shop: conn.shop_domain,
+    blogId: blog.id,
+    title: article.title,
+    featuredUrl: featuredUrl || '(none)',
+  });
 
   try {
     const result = await adminApi.createArticle({
