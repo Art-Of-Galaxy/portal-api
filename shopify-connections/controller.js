@@ -45,14 +45,29 @@ async function callback(req, res) {
   try {
     const { shop, code, state } = req.query || {};
     if (!shop || !code) {
+      console.warn('[shopify-callback] missing_code', { hasShop: !!shop, hasCode: !!code });
       return res.redirect(landingUrl({ status: 'error', error: 'missing_code' }));
     }
     if (!oauth.verifyShopifyHmac(req.query)) {
+      console.warn('[shopify-callback] bad_hmac', { shop });
       return res.redirect(landingUrl({ status: 'error', error: 'bad_hmac' }));
     }
     const verified = oauth.verifyState(state);
-    if (!verified?.user_email || !verified?.shop || verified.shop !== shop) {
-      return res.redirect(landingUrl({ status: 'error', error: 'bad_state' }));
+    if (!verified) {
+      console.warn('[shopify-callback] bad_state: hmac_failed (SHOPIFY_API_SECRET likely differs between /start and /callback, or state truncated)');
+      return res.redirect(landingUrl({ status: 'error', error: 'bad_state', sub: 'sig' }));
+    }
+    if (!verified.user_email) {
+      console.warn('[shopify-callback] bad_state: missing user_email in state');
+      return res.redirect(landingUrl({ status: 'error', error: 'bad_state', sub: 'no_email' }));
+    }
+    if (!verified.shop) {
+      console.warn('[shopify-callback] bad_state: missing shop in state');
+      return res.redirect(landingUrl({ status: 'error', error: 'bad_state', sub: 'no_shop' }));
+    }
+    if (verified.shop !== shop) {
+      console.warn('[shopify-callback] bad_state: shop mismatch', { stateShop: verified.shop, callbackShop: shop });
+      return res.redirect(landingUrl({ status: 'error', error: 'bad_state', sub: 'shop_mismatch' }));
     }
     const userEmail = verified.user_email;
 
