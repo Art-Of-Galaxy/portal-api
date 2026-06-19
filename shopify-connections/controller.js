@@ -67,7 +67,13 @@ async function callback(req, res) {
     }
     if (verified.shop !== shop) {
       console.warn('[shopify-callback] bad_state: shop mismatch', { stateShop: verified.shop, callbackShop: shop });
-      return res.redirect(landingUrl({ status: 'error', error: 'bad_state', sub: 'shop_mismatch' }));
+      return res.redirect(landingUrl({
+        status: 'error',
+        error: 'bad_state',
+        sub: 'shop_mismatch',
+        expected: verified.shop,
+        got: shop,
+      }));
     }
     const userEmail = verified.user_email;
 
