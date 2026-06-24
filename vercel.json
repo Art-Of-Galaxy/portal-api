@@ -5,19 +5,5 @@
       "source": "/(.*)",
       "destination": "/api/index.js"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/blog-engine/cron/publish",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/blog-engine/cron/autopilot",
-      "schedule": "7 * * * *"
-    },
-    {
-      "path": "/api/social-media/cron/publish",
-      "schedule": "* * * * *"
-    }
   ]
 }
