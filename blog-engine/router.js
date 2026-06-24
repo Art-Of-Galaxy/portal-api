@@ -17,7 +17,10 @@ router.get('/autopilot',           c.listAutopilots);
 router.patch('/autopilot/:id',     c.patchAutopilot);
 router.delete('/autopilot/:id',    c.destroyAutopilot);
 
-// Ops
+// Ops + cron (called by Vercel Cron Jobs; auth via CRON_SECRET)
 router.post('/run-scheduler',      c.runScheduler);
+router.get('/cron/publish',        c.cronPublishTick);
+router.get('/cron/autopilot',      c.cronAutopilotTick);
+router.get('/scheduler-health',    c.schedulerHealth);
 
 module.exports = router;

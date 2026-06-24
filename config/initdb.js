@@ -263,8 +263,8 @@ async function ensureDatabaseSchema() {
       hashtags TEXT,
       platforms TEXT,
       status VARCHAR(16) NOT NULL DEFAULT 'draft',
-      scheduled_for TIMESTAMP,
-      published_at TIMESTAMP,
+      scheduled_for TIMESTAMPTZ,
+      published_at TIMESTAMPTZ,
       batch_parent_id INTEGER REFERENCES tbl_social_posts(id) ON DELETE SET NULL,
       metrics_json JSONB,
       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -347,8 +347,8 @@ async function ensureDatabaseSchema() {
       seo_score INTEGER,
       word_count INTEGER,
       status VARCHAR(16) NOT NULL DEFAULT 'draft',
-      scheduled_for TIMESTAMP,
-      published_at TIMESTAMP,
+      scheduled_for TIMESTAMPTZ,
+      published_at TIMESTAMPTZ,
       shopify_article_id VARCHAR(64),
       shopify_blog_id VARCHAR(64),
       shopify_url TEXT,
@@ -383,14 +383,47 @@ async function ensureDatabaseSchema() {
       length VARCHAR(16),
       queue_depth INTEGER NOT NULL DEFAULT 5,
       status VARCHAR(16) NOT NULL DEFAULT 'active',
-      next_publish_at TIMESTAMP,
-      last_drafted_at TIMESTAMP,
+      next_publish_at TIMESTAMPTZ,
+      last_drafted_at TIMESTAMPTZ,
       published_count INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMP NOT NULL DEFAULT NOW()
     );
   `);
   await poll.query(`CREATE INDEX IF NOT EXISTS idx_blog_autopilots_active ON tbl_blog_autopilots (status, next_publish_at) WHERE status = 'active';`);
+
+  // Idempotent timezone migration. Earlier versions of these tables stored
+  // scheduled_for / published_at / next_publish_at as TIMESTAMP (no zone).
+  // The API + UI have always sent UTC ISO strings, so the stored values
+  // are naive UTC. Convert them to TIMESTAMPTZ so reads come back as
+  // proper UTC and pg's NOW() comparison works correctly. The
+  // `USING ... AT TIME ZONE 'UTC'` clause tells postgres to treat the
+  // existing naive value as UTC, which matches what we've been writing.
+  // ALTER is a no-op once the column is already TIMESTAMPTZ.
+  const tzCols = [
+    ['tbl_social_posts',   'scheduled_for'],
+    ['tbl_social_posts',   'published_at'],
+    ['tbl_blog_articles',  'scheduled_for'],
+    ['tbl_blog_articles',  'published_at'],
+    ['tbl_blog_autopilots','next_publish_at'],
+    ['tbl_blog_autopilots','last_drafted_at'],
+  ];
+  for (const [table, col] of tzCols) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await poll.query(
+        `ALTER TABLE ${table}
+            ALTER COLUMN ${col} TYPE TIMESTAMPTZ
+            USING ${col} AT TIME ZONE 'UTC'`
+      );
+    } catch (err) {
+      // pg throws if the table doesn't exist yet (first-boot ordering) or
+      // if it's already TIMESTAMPTZ on some drivers. Both are harmless.
+      if (!/does not exist|cannot be cast/i.test(err.message || '')) {
+        console.warn(`[schema] ${table}.${col} TZ migration skipped:`, err.message || err);
+      }
+    }
+  }
 }
 
 module.exports = {

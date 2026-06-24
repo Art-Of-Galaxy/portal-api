@@ -299,4 +299,54 @@ async function runScheduler(_req, res) {
   }
 }
 
-module.exports = { generate, save, publishNow, library, stats, getPost, runScheduler };
+function isAuthorizedCron(req) {
+  const secret = (process.env.CRON_SECRET || '').trim();
+  if (!secret) return true;
+  return (req.headers['authorization'] || '') === `Bearer ${secret}`;
+}
+
+// Vercel Cron hits this every minute. node-cron does not work on
+// serverless (process dies between requests), so the in-memory cron
+// is a no-op on Vercel and the real schedule lives in vercel.json.
+async function cronPublishTick(req, res) {
+  if (!isAuthorizedCron(req)) {
+    return res.status(401).json({ success: false, message: 'unauthorized' });
+  }
+  try {
+    await scheduler.tick();
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error('social-media/cronPublishTick error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'tick failed' });
+  }
+}
+
+async function schedulerHealth(_req, res) {
+  try {
+    const now = await poll.query(`SELECT NOW() AS now`);
+    const due = await poll.query(
+      `SELECT id, user_email, status, scheduled_for,
+              (scheduled_for - NOW()) AS until_due,
+              (scheduled_for <= NOW()) AS is_due
+         FROM tbl_social_posts
+        WHERE status IN ('scheduled', 'publishing')
+        ORDER BY scheduled_for ASC NULLS LAST
+        LIMIT 5`
+    );
+    return res.status(200).json({
+      success: true,
+      server_now: (now[0] || now.rows?.[0])?.now || null,
+      cron_secret_set: Boolean((process.env.CRON_SECRET || '').trim()),
+      scheduler_env: process.env.SOCIAL_SCHEDULER || 'on',
+      next_due: due || [],
+    });
+  } catch (err) {
+    console.error('social-media/schedulerHealth error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'health failed' });
+  }
+}
+
+module.exports = {
+  generate, save, publishNow, library, stats, getPost, runScheduler,
+  cronPublishTick, schedulerHealth,
+};

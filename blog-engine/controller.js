@@ -471,8 +471,87 @@ async function runScheduler(_req, res) {
   }
 }
 
+// Auth helper for the cron endpoints. Vercel Cron injects
+// `Authorization: Bearer <CRON_SECRET>` so we only run when the request
+// is from Vercel (or anything else holding the secret). If CRON_SECRET
+// is not set, allow the call (useful for local dev + external cron
+// services where the user sets their own header).
+function isAuthorizedCron(req) {
+  const secret = (process.env.CRON_SECRET || '').trim();
+  if (!secret) return true;
+  const header = req.headers['authorization'] || '';
+  return header === `Bearer ${secret}`;
+}
+
+// Called by Vercel Cron (or any external scheduler). Runs the publish
+// queue tick. Safe to call as often as the platform allows.
+async function cronPublishTick(req, res) {
+  if (!isAuthorizedCron(req)) {
+    return res.status(401).json({ success: false, message: 'unauthorized' });
+  }
+  try {
+    await scheduler.publishTick();
+    return res.status(200).json({ success: true, ran: 'publish' });
+  } catch (err) {
+    console.error('[blog-engine] cronPublishTick error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'tick failed' });
+  }
+}
+
+// Called by Vercel Cron. Refills autopilot draft queues. Hourly is
+// plenty; running more often just burns Claude credits.
+async function cronAutopilotTick(req, res) {
+  if (!isAuthorizedCron(req)) {
+    return res.status(401).json({ success: false, message: 'unauthorized' });
+  }
+  try {
+    await scheduler.autopilotTick();
+    return res.status(200).json({ success: true, ran: 'autopilot' });
+  } catch (err) {
+    console.error('[blog-engine] cronAutopilotTick error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'tick failed' });
+  }
+}
+
+// Diagnostic. Shows server clock, next due article, and what the
+// publish query *would* claim right now. Use to debug timezone /
+// scheduling issues without actually triggering a publish.
+async function schedulerHealth(_req, res) {
+  try {
+    const now = await poll.query(`SELECT NOW() AS now`);
+    const dueRows = await poll.query(
+      `SELECT id, user_email, title, status, scheduled_for,
+              (scheduled_for - NOW())              AS until_due,
+              (scheduled_for <= NOW())             AS is_due
+         FROM tbl_blog_articles
+        WHERE status IN ('scheduled', 'publishing')
+        ORDER BY scheduled_for ASC NULLS LAST
+        LIMIT 5`
+    );
+    const lastPub = await poll.query(
+      `SELECT id, user_email, title, published_at
+         FROM tbl_blog_articles
+        WHERE status = 'published' AND published_at IS NOT NULL
+        ORDER BY published_at DESC LIMIT 3`
+    );
+    return res.status(200).json({
+      success: true,
+      server_now: (now[0] || now.rows?.[0])?.now || null,
+      cron_secret_set: Boolean((process.env.CRON_SECRET || '').trim()),
+      publish_scheduler_env: process.env.BLOG_PUBLISH_SCHEDULER || 'on',
+      autopilot_scheduler_env: process.env.BLOG_AUTOPILOT_SCHEDULER || 'on',
+      next_due: dueRows || [],
+      last_published: lastPub || [],
+      note: 'On Vercel, node-cron does not run. Hit /cron/publish and /cron/autopilot via Vercel Cron Jobs (see vercel.json).',
+    });
+  } catch (err) {
+    console.error('[blog-engine] schedulerHealth error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'health failed' });
+  }
+}
+
 module.exports = {
   generate, save, bulk, publishNow, getArticle, library, stats,
   createOrUpdateAutopilot, listAutopilots, patchAutopilot, destroyAutopilot,
-  runScheduler,
+  runScheduler, cronPublishTick, cronAutopilotTick, schedulerHealth,
 };

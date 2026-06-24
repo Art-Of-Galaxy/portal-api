@@ -110,4 +110,4 @@ async function runOnce() {
   await tick();
 }
 
-module.exports = { start, stop, runOnce };
+module.exports = { start, stop, runOnce, tick };
