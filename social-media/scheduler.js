@@ -18,9 +18,14 @@ let task = null;
 // Atomically claim a batch of due posts so two ticks don't double-publish.
 // FOR UPDATE SKIP LOCKED is the standard Postgres idiom; falls back to
 // a plain UPDATE when running on a Postgres < 9.5.
-async function claimDuePosts(limit = 5) {
+async function claimDuePosts(limit = 1) {
+  // The pg wrapper in config/dbconfig.js unwraps `.rows` only for SELECT
+  // commands. UPDATE...RETURNING comes back as { rowCount, rows } so we
+  // always read .rows. Default batch size is 1 to keep each invocation
+  // under Vercel's 10s Hobby function timeout (publishing a post can
+  // take 5-15s per platform).
   try {
-    const rows = await poll.query(
+    const result = await poll.query(
       `WITH due AS (
          SELECT id FROM tbl_social_posts
           WHERE status = 'scheduled' AND scheduled_for <= NOW()
@@ -35,13 +40,11 @@ async function claimDuePosts(limit = 5) {
        RETURNING p.id`,
       [limit]
     );
-    return (rows || []).map((r) => r.id);
+    const rows = Array.isArray(result) ? result : (result?.rows || []);
+    return rows.map((r) => r.id);
   } catch (err) {
-    // Fallback for older Postgres without SKIP LOCKED, or when the
-    // pool wrapper doesn't support CTE returning. Slightly racier but
-    // good enough at v1 traffic.
     console.warn(`${TASK_NAME} claim CTE failed, falling back:`, err.message || err);
-    const r = await poll.query(
+    const result = await poll.query(
       `UPDATE tbl_social_posts
           SET status = 'publishing', updated_at = NOW()
         WHERE id IN (
@@ -53,14 +56,32 @@ async function claimDuePosts(limit = 5) {
         RETURNING id`,
       [limit]
     );
-    return (r?.rows || r || []).map((row) => row.id);
+    const rows = Array.isArray(result) ? result : (result?.rows || []);
+    return rows.map((row) => row.id);
+  }
+}
+
+// Recovery: rows stuck at 'publishing' (Lambda timed out, deploy mid-tick,
+// crash) get flipped back to 'scheduled' after 5 minutes so the next tick
+// retries them.
+async function recoverStuckPublishing() {
+  try {
+    await poll.query(
+      `UPDATE tbl_social_posts
+          SET status = 'scheduled', updated_at = NOW()
+        WHERE status = 'publishing'
+          AND updated_at < NOW() - INTERVAL '5 minutes'`
+    );
+  } catch (err) {
+    console.warn(`${TASK_NAME} recovery sweep failed:`, err.message || err);
   }
 }
 
 async function tick() {
+  await recoverStuckPublishing();
   let ids = [];
   try {
-    ids = await claimDuePosts(5);
+    ids = await claimDuePosts(1);
   } catch (err) {
     console.error(`${TASK_NAME} claim error:`, err.message || err);
     return;

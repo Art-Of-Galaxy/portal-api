@@ -22,8 +22,13 @@ let publishTask = null;
 let autopilotTask = null;
 
 async function claimDueArticles(limit = 3) {
+  // The pg wrapper in config/dbconfig.js unwraps `.rows` only for SELECT
+  // commands. For UPDATE...RETURNING it returns { rowCount, rows }, so we
+  // always have to read the .rows field. Lower the default batch to 1
+  // because publishArticle does several Shopify GraphQL calls and we want
+  // to stay well under Vercel's 10s Hobby function timeout.
   try {
-    const rows = await poll.query(
+    const result = await poll.query(
       `WITH due AS (
          SELECT id FROM tbl_blog_articles
           WHERE status = 'scheduled' AND scheduled_for <= NOW()
@@ -38,10 +43,11 @@ async function claimDueArticles(limit = 3) {
        RETURNING a.id`,
       [limit]
     );
-    return (rows || []).map((r) => r.id);
+    const rows = Array.isArray(result) ? result : (result?.rows || []);
+    return rows.map((r) => r.id);
   } catch (err) {
     console.warn(`${PUBLISH_TAG} claim CTE failed, falling back:`, err.message || err);
-    const r = await poll.query(
+    const result = await poll.query(
       `UPDATE tbl_blog_articles
           SET status = 'publishing', updated_at = NOW()
         WHERE id IN (
@@ -52,13 +58,36 @@ async function claimDueArticles(limit = 3) {
         RETURNING id`,
       [limit]
     );
-    return (r?.rows || r || []).map((row) => row.id);
+    const rows = Array.isArray(result) ? result : (result?.rows || []);
+    return rows.map((row) => row.id);
+  }
+}
+
+// Recovery: if a previous tick crashed (Lambda timed out, deploy
+// rolled, etc.) the row gets stuck at status='publishing' forever.
+// Flip anything older than 5 minutes back to 'scheduled' so the next
+// tick picks it up again.
+async function recoverStuckPublishing() {
+  try {
+    await poll.query(
+      `UPDATE tbl_blog_articles
+          SET status = 'scheduled', updated_at = NOW()
+        WHERE status = 'publishing'
+          AND updated_at < NOW() - INTERVAL '5 minutes'`
+    );
+  } catch (err) {
+    console.warn(`${PUBLISH_TAG} recovery sweep failed:`, err.message || err);
   }
 }
 
 async function publishTick() {
+  await recoverStuckPublishing();
   let ids = [];
-  try { ids = await claimDueArticles(3); }
+  // Batch size = 1 to keep each invocation under Vercel's 10s Hobby
+  // function timeout. publishArticle uploads the featured image to
+  // Shopify Files (stagedUploadsCreate + multipart POST + polling) then
+  // calls articleCreate + metafieldsSet, easily 5-15s per article.
+  try { ids = await claimDueArticles(1); }
   catch (err) { console.error(`${PUBLISH_TAG} claim error:`, err.message || err); return; }
   if (!ids.length) return;
   console.log(`${PUBLISH_TAG} publishing ${ids.length} due article(s): ${ids.join(', ')}`);
