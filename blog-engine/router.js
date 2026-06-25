@@ -7,6 +7,8 @@ router.post('/generate',           c.generate);
 router.post('/save',               c.save);
 router.post('/bulk',               c.bulk);
 router.post('/:id/publish',        c.publishNow);
+router.post('/:id/featured-image', c.setFeaturedImage);
+router.post('/:id/regen-image',    c.regenFeaturedImage);
 router.get('/library',             c.library);
 router.get('/stats',               c.stats);
 router.get('/articles/:id',        c.getArticle);

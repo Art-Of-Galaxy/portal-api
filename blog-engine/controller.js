@@ -462,6 +462,82 @@ async function destroyAutopilot(req, res) {
   }
 }
 
+// Persist a new featured image on an existing draft article. Used by the
+// Preview screen so the user can swap the image without re-running
+// article generation. `image_url` is what the user uploaded (or a CDN
+// URL we generated). `source` distinguishes user uploads from fal.ai.
+async function setFeaturedImage(req, res) {
+  try {
+    const userEmail = getUserEmail(req);
+    const id = Number(req.params.id);
+    const { image_url, source = 'user', content_type } = req.body || {};
+    if (!userEmail) return res.status(400).json({ success: false, message: 'user_email is required' });
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    if (!image_url || !/^https?:\/\//i.test(image_url)) {
+      return res.status(400).json({ success: false, message: 'Valid image_url is required' });
+    }
+    const rows = await poll.query(
+      `SELECT assets_json FROM tbl_blog_articles WHERE id = $1 AND user_email = $2 LIMIT 1`,
+      [id, userEmail]
+    );
+    const article = (rows || [])[0];
+    if (!article) return res.status(404).json({ success: false, message: 'Article not found' });
+    const assets = article.assets_json || {};
+    assets.featured = { url: image_url, source, content_type: content_type || null };
+    await poll.query(
+      `UPDATE tbl_blog_articles SET assets_json = $1, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify(assets), id]
+    );
+    return res.status(200).json({ success: true, featured: assets.featured });
+  } catch (err) {
+    console.error('blog-engine/setFeaturedImage error:', err);
+    return res.status(err.status || 500).json({ success: false, message: err.message || 'Failed' });
+  }
+}
+
+// Regenerate the featured image via fal.ai for an existing draft. If
+// the caller provides `prompt`, use it; otherwise fall back to the
+// article's stored image_prompt. Also accepts `reference_image_urls`
+// so the user can steer the regeneration with the same images they
+// uploaded earlier.
+async function regenFeaturedImage(req, res) {
+  try {
+    const userEmail = getUserEmail(req);
+    const id = Number(req.params.id);
+    const { prompt, reference_image_urls = [] } = req.body || {};
+    if (!userEmail) return res.status(400).json({ success: false, message: 'user_email is required' });
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+    const rows = await poll.query(
+      `SELECT brief_json, spec_json, assets_json FROM tbl_blog_articles WHERE id = $1 AND user_email = $2 LIMIT 1`,
+      [id, userEmail]
+    );
+    const article = (rows || [])[0];
+    if (!article) return res.status(404).json({ success: false, message: 'Article not found' });
+    const promptToUse = (prompt && String(prompt).trim())
+      || article.spec_json?.image_prompt
+      || `Editorial featured image for: ${article.spec_json?.title || article.brief_json?.keyword || 'article'}`;
+    const refs = Array.isArray(reference_image_urls) && reference_image_urls.length
+      ? reference_image_urls
+      : (article.brief_json?.reference_images || []).map((r) => r?.url).filter(Boolean);
+    const brand = article.brief_json?.brand || '';
+    const featured = await service.regenerateFeaturedImage({
+      prompt: promptToUse,
+      brand,
+      referenceImageUrls: refs,
+    });
+    const assets = article.assets_json || {};
+    assets.featured = featured;
+    await poll.query(
+      `UPDATE tbl_blog_articles SET assets_json = $1, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify(assets), id]
+    );
+    return res.status(200).json({ success: true, featured });
+  } catch (err) {
+    console.error('blog-engine/regenFeaturedImage error:', err);
+    return res.status(err.status || 500).json({ success: false, message: err.message || 'Image regen failed' });
+  }
+}
+
 async function runScheduler(_req, res) {
   try {
     await scheduler.runOnce();
@@ -552,6 +628,7 @@ async function schedulerHealth(_req, res) {
 
 module.exports = {
   generate, save, bulk, publishNow, getArticle, library, stats,
+  setFeaturedImage, regenFeaturedImage,
   createOrUpdateAutopilot, listAutopilots, patchAutopilot, destroyAutopilot,
   runScheduler, cronPublishTick, cronAutopilotTick, schedulerHealth,
 };

@@ -267,8 +267,27 @@ async function generateArticle({ brief, requestedModel }) {
   };
 }
 
+// Standalone featured-image regeneration. Used by the Preview screen's
+// "Regenerate" button when the user wants a new fal.ai image without
+// re-running the whole article. Takes the existing image_prompt (or a
+// user override) + the same reference image plumbing as the initial
+// generation. Mirrors to S3 when configured so the URL is permanent.
+async function regenerateFeaturedImage({ prompt, brand, referenceImageUrls = [] } = {}) {
+  if (!prompt || !String(prompt).trim()) {
+    throw Object.assign(new Error('prompt is required'), { status: 400 });
+  }
+  const brandSlug = safeBrandSlug(brand || 'article');
+  const brief = { reference_images: referenceImageUrls };
+  const featured = await generateFeaturedImage({ prompt, brandSlug, brief });
+  if (!featured?.url) {
+    throw Object.assign(new Error('Image generation returned no image'), { status: 502 });
+  }
+  return { ...featured, source: 'fal' };
+}
+
 module.exports = {
   generateArticle,
+  regenerateFeaturedImage,
   DEFAULT_MODEL,
   ALLOWED_MODELS: Array.from(ALLOWED_MODELS),
 };
