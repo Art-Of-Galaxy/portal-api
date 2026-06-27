@@ -256,6 +256,20 @@ async function list(req, res) {
   }
 }
 
+async function setPrimary(req, res) {
+  try {
+    const userEmail = getUserEmail(req);
+    if (!userEmail) return res.status(400).json({ success: false, message: 'user_email is required' });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, message: 'Invalid connection id' });
+    const out = await service.setPrimaryConnection({ userEmail, connectionId: id });
+    return res.status(200).json({ success: true, ...out });
+  } catch (err) {
+    console.error('social-connections/setPrimary error:', err);
+    return res.status(err.status || 500).json({ success: false, message: err.message || 'Failed' });
+  }
+}
+
 async function destroy(req, res) {
   try {
     const userEmail = getUserEmail(req);
@@ -275,4 +289,4 @@ async function destroy(req, res) {
   }
 }
 
-module.exports = { start, callbackMeta, callbackGoogle, callbackInstagram, list, destroy };
+module.exports = { start, callbackMeta, callbackGoogle, callbackInstagram, list, setPrimary, destroy };

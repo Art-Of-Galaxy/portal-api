@@ -301,7 +301,14 @@ async function generateContent({ brief, requestedModel }) {
 
   // Generate the cover image now so the preview screen has something
   // real to render. Videos for Reels are deferred until publish time.
+  //
+  // If fal.ai fails (credits exhausted, rate-limited, model gated)
+  // we fall back to the FIRST image the user uploaded with the brief.
+  // That way the saved post always has a usable cover_url and the
+  // publisher never needs to retry image generation. The user can
+  // still swap the image later via the preview screen if they want.
   let cover = null;
+  let coverSource = null;
   if (spec.cover_prompt && contentType !== 'batch') {
     cover = await generateCoverImage({
       type: contentType,
@@ -309,6 +316,15 @@ async function generateContent({ brief, requestedModel }) {
       brandSlug,
       brief,
     });
+    if (cover?.url) coverSource = 'fal';
+  }
+  if (!cover?.url) {
+    const uploaded = uploadedReferenceUrls(brief);
+    if (uploaded.length) {
+      cover = { url: uploaded[0], content_type: null };
+      coverSource = 'user_upload';
+      console.warn('[social-media] cover generation skipped/failed, using uploaded brief image as cover');
+    }
   }
 
   return {
@@ -318,6 +334,7 @@ async function generateContent({ brief, requestedModel }) {
     platforms,
     spec,
     cover, // { url, content_type } or null
+    cover_source: coverSource, // 'fal' | 'user_upload' | null
   };
 }
 

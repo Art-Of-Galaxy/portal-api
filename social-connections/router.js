@@ -14,6 +14,10 @@ router.get('/callback/instagram', controller.callbackInstagram);
 // List the calling user's connected accounts.
 router.get('/', controller.list);
 
+// Set a connection as the primary for its platform. Publisher only
+// posts to the primary when the user has multiple accounts.
+router.patch('/:id/primary', controller.setPrimary);
+
 // Revoke a single connection.
 router.delete('/:id', controller.destroy);
 

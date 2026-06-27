@@ -246,6 +246,31 @@ async function ensureDatabaseSchema() {
     );
   `);
   await poll.query(`CREATE INDEX IF NOT EXISTS idx_social_conn_user ON tbl_social_connections (user_email, state);`);
+  // is_primary: when a user has multiple accounts on the same platform
+  // (e.g. two Instagrams), the publisher only publishes to the primary.
+  // First connection per (user, platform) gets is_primary=true on insert.
+  await poll.query(`ALTER TABLE tbl_social_connections ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE;`);
+  // Backfill: every user/platform group needs at least one primary.
+  // Promote the oldest connection per (user, platform) if no row is
+  // currently flagged. Idempotent: re-runs are no-ops.
+  await poll.query(`
+    UPDATE tbl_social_connections t
+       SET is_primary = TRUE
+      FROM (
+        SELECT DISTINCT ON (user_email, platform) id
+          FROM tbl_social_connections
+         WHERE state = 'connected'
+         ORDER BY user_email, platform, created_at ASC
+      ) AS first_per
+     WHERE t.id = first_per.id
+       AND NOT EXISTS (
+         SELECT 1 FROM tbl_social_connections x
+          WHERE x.user_email = t.user_email
+            AND x.platform = t.platform
+            AND x.state = 'connected'
+            AND x.is_primary = TRUE
+       );
+  `);
 
   // Each generated piece of content. brief_json holds the user's input,
   // spec_json holds the Claude output, assets_json holds the generated

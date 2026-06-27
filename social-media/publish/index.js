@@ -76,34 +76,60 @@ async function ensureReelsVideo(post) {
   return videoUrl;
 }
 
+// Look in the brief for any image the user uploaded that we can use
+// as a publish-time fallback when fal.ai is unavailable. Checked keys
+// match what the social-media brief builder writes: brand_assets,
+// reference_images, product_images, brand_images.
+function pickUploadedImageUrl(brief) {
+  const buckets = [
+    brief?.brand_assets,
+    brief?.reference_images,
+    brief?.product_images,
+    brief?.brand_images,
+  ];
+  for (const bucket of buckets) {
+    if (Array.isArray(bucket)) {
+      const first = bucket.find((b) => b && typeof b.url === 'string' && /^https?:\/\//i.test(b.url));
+      if (first) return first.url;
+    }
+  }
+  return null;
+}
+
 // For image posts (everything except reels) Instagram + Facebook both
-// require a hosted image URL. The cover is normally generated at brief
-// time and saved on assets.cover_url, but if the user re-generates or
-// the cover failed earlier the field can be empty. Generate it inline
-// from spec.cover_prompt and persist so re-publishes don't redo it.
+// require a hosted image URL. The cover is generated at BRIEF time
+// (see social-media/service.js -> generateContent) and stored on
+// assets.cover_url. This publish-time helper NEVER calls fal.ai. It
+// just resolves an existing URL or falls back to an uploaded image.
+//
+// If both are missing, we throw a clear error rather than re-generating
+// at publish time. Why: publish should be cheap and deterministic.
+// fal.ai calls are expensive, occasionally rate-limited, and can break
+// the scheduler when credits run out. Generation belongs in the create
+// flow, not the publish flow.
+//
+// Resolution order:
+//   1. assets.cover_url (already on the post — fast path)
+//   2. any image the user uploaded in the brief (last-chance fallback)
+//   3. fail with a message telling the user to re-open + regenerate
 async function ensureCoverImage(post) {
   const existing = post.assets_json?.cover_url;
   if (existing) return existing;
 
-  const prompt = post.spec_json?.cover_prompt;
-  if (!prompt) {
-    throw new Error('Post has no cover image and no cover_prompt to generate one. Re-open the draft and regenerate.');
+  const uploaded = pickUploadedImageUrl(post.brief_json || {});
+  if (uploaded) {
+    console.warn('[social-media] post', post.id, 'has no generated cover, using uploaded image as fallback');
+    const nextAssets = { ...(post.assets_json || {}), cover_url: uploaded, cover_content_type: null };
+    await poll.query(
+      `UPDATE tbl_social_posts SET assets_json = $2::jsonb, updated_at = NOW() WHERE id = $1`,
+      [post.id, JSON.stringify(nextAssets)]
+    );
+    return uploaded;
   }
-  const brandSlug = safeSlug(post.brief_json?.brand || post.brief_json?.brand_name);
-  const cover = await smService.generateCoverImage({
-    type: post.content_type,
-    prompt,
-    brandSlug,
-    brief: post.brief_json || {},
-  });
-  if (!cover?.url) throw new Error('Cover image generation returned no URL');
 
-  const nextAssets = { ...(post.assets_json || {}), cover_url: cover.url, cover_content_type: cover.content_type || null };
-  await poll.query(
-    `UPDATE tbl_social_posts SET assets_json = $2::jsonb, updated_at = NOW() WHERE id = $1`,
-    [post.id, JSON.stringify(nextAssets)]
+  throw new Error(
+    'This post has no cover image. Re-open the draft, regenerate the visual or upload one, then save before publishing.'
   );
-  return cover.url;
 }
 
 // ---------- DB helpers ----------
@@ -200,20 +226,24 @@ async function publishPost({ postId }) {
       results.push({ platform, error: 'unknown_platform' });
       continue;
     }
-    // Fan out to every connected account for this platform. If the
-    // user has two Instagrams connected, the post goes to both. Each
-    // attempt is recorded as its own run row so we can show per-account
-    // outcomes in the UI.
+    // Publish to the PRIMARY connection only. When the user has
+    // multiple Instagrams / Pages connected, only the one they flagged
+    // as primary in the Connections page gets the post. The query
+    // sorts is_primary DESC so [0] is the primary if any exists,
+    // otherwise the most recent connection (auto-elected as primary
+    // on insert by upsertConnection).
     const connections = await connectionsService.getAllConnectionsWithTokens({
       userEmail: post.user_email,
       platform,
     });
-    if (!connections.length) {
+    const primaryOnly = connections.filter((c) => c.is_primary);
+    const toPublish = primaryOnly.length ? primaryOnly : connections.slice(0, 1);
+    if (!toPublish.length) {
       await recordRun({ postId, platform, state: 'error', errorCode: 'not_connected' });
       results.push({ platform, error: 'not_connected' });
       continue;
     }
-    for (const connection of connections) {
+    for (const connection of toPublish) {
       try {
         const result = await publisher({ post, connection, assets });
         await recordRun({
