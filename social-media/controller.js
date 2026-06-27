@@ -215,25 +215,30 @@ async function library(req, res) {
       where.push(`p.status = $${params.length}`);
     }
 
-    // Error counting cutoff: only runs from the CURRENT lifecycle
-    // matter. If the post is currently published, any error rows from
-    // before published_at are leftovers from earlier failed attempts
-    // that have since succeeded - they should not surface as errors
-    // anymore. For non-published posts (draft/scheduled/failed) we
-    // count all error runs.
+    // Error filtering: errors from a publish attempt that has since
+    // been superseded by a successful run are stale. The cutoff is the
+    // most recent SUCCESSFUL run timestamp per post. Errors at or
+    // before that timestamp belong to the older failed attempt that
+    // we've already recovered from. For posts that never succeeded
+    // (no success runs), every error counts.
     const rows = await poll.query(
-      `SELECT p.id, p.content_type, p.caption, p.hashtags, p.platforms, p.status,
+      `WITH last_success AS (
+         SELECT post_id, MAX(started_at) AS last_success_at
+           FROM tbl_social_post_runs
+          WHERE state = 'success'
+          GROUP BY post_id
+       )
+       SELECT p.id, p.content_type, p.caption, p.hashtags, p.platforms, p.status,
               p.scheduled_for, p.published_at, p.assets_json, p.spec_json,
               p.metrics_json, p.created_at, p.updated_at,
+              ls.last_success_at,
               (SELECT COUNT(*) FROM tbl_social_post_runs r
-                 WHERE r.post_id = p.id
-                   AND r.state = 'success'
-                   AND (p.published_at IS NULL OR r.started_at >= p.published_at))::int
+                 WHERE r.post_id = p.id AND r.state = 'success')::int
                 AS run_success_count,
               (SELECT COUNT(*) FROM tbl_social_post_runs r
                  WHERE r.post_id = p.id
                    AND r.state = 'error'
-                   AND (p.published_at IS NULL OR r.started_at > p.published_at))::int
+                   AND (ls.last_success_at IS NULL OR r.started_at > ls.last_success_at))::int
                 AS run_error_count,
               (SELECT json_build_object(
                         'platform', r.platform,
@@ -244,9 +249,10 @@ async function library(req, res) {
                  FROM tbl_social_post_runs r
                 WHERE r.post_id = p.id
                   AND r.state = 'error'
-                  AND (p.published_at IS NULL OR r.started_at > p.published_at)
+                  AND (ls.last_success_at IS NULL OR r.started_at > ls.last_success_at)
                 ORDER BY r.started_at DESC LIMIT 1) AS last_error
          FROM tbl_social_posts p
+         LEFT JOIN last_success ls ON ls.post_id = p.id
         WHERE ${where.join(' AND ')}
         ORDER BY COALESCE(p.scheduled_for, p.published_at, p.updated_at) DESC
         LIMIT 60`,
