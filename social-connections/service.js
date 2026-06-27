@@ -99,14 +99,24 @@ async function listConnections({ userEmail }) {
   }));
 }
 
-// Internal helper: fetch a connection's decrypted tokens. Only the
-// publisher modules call this; we don't expose it via HTTP.
+// Internal helper: fetch one connection's decrypted tokens. Used by
+// the connections controller when refreshing/probing a single row.
 async function getConnectionWithTokens({ userEmail, platform, connectionId }) {
+  const rows = await getAllConnectionsWithTokens({ userEmail, platform, connectionId, limit: 1 });
+  return rows[0] || null;
+}
+
+// Internal helper: fetch ALL active connections matching the filters,
+// with decrypted tokens. The publisher uses this so a user who has
+// connected multiple Instagrams (or Pages) gets the post fanned out to
+// every connected account.
+async function getAllConnectionsWithTokens({ userEmail, platform, connectionId, limit } = {}) {
   const where = ['state = \'connected\''];
   const params = [];
   if (userEmail) { params.push(userEmail); where.push(`user_email = $${params.length}`); }
   if (platform)  { params.push(platform);  where.push(`platform = $${params.length}`); }
   if (connectionId) { params.push(connectionId); where.push(`id = $${params.length}`); }
+  const limitClause = Number.isInteger(limit) && limit > 0 ? `LIMIT ${limit}` : '';
 
   const rows = await poll.query(
     `SELECT id, user_email, platform, account_id, account_handle, account_name,
@@ -114,12 +124,10 @@ async function getConnectionWithTokens({ userEmail, platform, connectionId }) {
        FROM tbl_social_connections
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC
-      LIMIT 1`,
+      ${limitClause}`,
     params
   );
-  const row = (rows || [])[0];
-  if (!row) return null;
-  return {
+  return (rows || []).map((row) => ({
     id: row.id,
     user_email: row.user_email,
     platform: row.platform,
@@ -132,7 +140,7 @@ async function getConnectionWithTokens({ userEmail, platform, connectionId }) {
     meta: row.meta || null,
     expires_at: row.expires_at,
     state: row.state,
-  };
+  }));
 }
 
 // Soft delete (state='revoked'). Keeps the row for audit. Tokens are
@@ -157,5 +165,6 @@ module.exports = {
   upsertConnection,
   listConnections,
   getConnectionWithTokens,
+  getAllConnectionsWithTokens,
   disconnect,
 };

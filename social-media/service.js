@@ -325,5 +325,6 @@ module.exports = {
   ALLOWED_TYPES: Array.from(ALLOWED_TYPES),
   ALLOWED_PLATFORMS: Array.from(ALLOWED_PLATFORMS),
   generateContent,
+  generateCoverImage,
   DEFAULT_MODEL,
 };

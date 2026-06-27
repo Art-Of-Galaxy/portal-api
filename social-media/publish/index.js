@@ -7,6 +7,7 @@ const { poll } = require('../../config/dbconfig');
 const connectionsService = require('../../social-connections/service');
 const higgsfield = require('../../helper/higgsfield_cli');
 const s3 = require('../../helper/s3_storage');
+const smService = require('../service');
 const igPublisher = require('./instagram');
 const fbPublisher = require('./facebook');
 const ytPublisher = require('./youtube');
@@ -75,6 +76,36 @@ async function ensureReelsVideo(post) {
   return videoUrl;
 }
 
+// For image posts (everything except reels) Instagram + Facebook both
+// require a hosted image URL. The cover is normally generated at brief
+// time and saved on assets.cover_url, but if the user re-generates or
+// the cover failed earlier the field can be empty. Generate it inline
+// from spec.cover_prompt and persist so re-publishes don't redo it.
+async function ensureCoverImage(post) {
+  const existing = post.assets_json?.cover_url;
+  if (existing) return existing;
+
+  const prompt = post.spec_json?.cover_prompt;
+  if (!prompt) {
+    throw new Error('Post has no cover image and no cover_prompt to generate one. Re-open the draft and regenerate.');
+  }
+  const brandSlug = safeSlug(post.brief_json?.brand || post.brief_json?.brand_name);
+  const cover = await smService.generateCoverImage({
+    type: post.content_type,
+    prompt,
+    brandSlug,
+    brief: post.brief_json || {},
+  });
+  if (!cover?.url) throw new Error('Cover image generation returned no URL');
+
+  const nextAssets = { ...(post.assets_json || {}), cover_url: cover.url, cover_content_type: cover.content_type || null };
+  await poll.query(
+    `UPDATE tbl_social_posts SET assets_json = $2::jsonb, updated_at = NOW() WHERE id = $1`,
+    [post.id, JSON.stringify(nextAssets)]
+  );
+  return cover.url;
+}
+
 // ---------- DB helpers ----------
 
 async function loadPost(postId) {
@@ -98,10 +129,14 @@ async function recordRun({ postId, platform, state, platformPostId, errorCode, e
 }
 
 async function markStatus(postId, status) {
+  // Cast $2 explicitly so postgres doesn't deduce two different types
+  // for the same parameter (status column is VARCHAR(16), the comparison
+  // literal is TEXT). Without the cast pg throws 42P08 "inconsistent
+  // types deduced for parameter $2".
   await poll.query(
     `UPDATE tbl_social_posts
-        SET status = $2,
-            published_at = CASE WHEN $2 = 'published' THEN NOW() ELSE published_at END,
+        SET status = $2::varchar,
+            published_at = CASE WHEN $2::varchar = 'published' THEN NOW() ELSE published_at END,
             updated_at = NOW()
       WHERE id = $1`,
     [postId, status]
@@ -119,7 +154,10 @@ async function publishPost({ postId }) {
     throw new Error('Post has no target platforms');
   }
 
-  // Make sure the video exists for Reels before we touch any publishers.
+  // Make sure the right asset exists before we touch any publishers.
+  // Reels need a video, image posts (post / carousel / thumbnail /
+  // profile) need a cover image URL. Both are generated/cached on the
+  // post row so re-publishes don't re-run the upstream generators.
   let assets = { ...(post.assets_json || {}) };
   if (post.content_type === 'reel') {
     try {
@@ -136,6 +174,22 @@ async function publishPost({ postId }) {
       await markStatus(postId, 'failed');
       return { ok: false, error: err.message };
     }
+  } else if (platforms.some((p) => p === 'instagram' || p === 'facebook')) {
+    // YouTube uses video only; IG + FB image posts both need cover_url.
+    try {
+      assets.cover_url = await ensureCoverImage(post);
+    } catch (err) {
+      console.error('[social-media] ensureCoverImage failed:', err.message || err);
+      await recordRun({
+        postId,
+        platform: 'cover_render',
+        state: 'error',
+        errorCode: 'cover_render_failed',
+        errorMessage: err.message,
+      });
+      await markStatus(postId, 'failed');
+      return { ok: false, error: err.message };
+    }
   }
 
   const results = [];
@@ -146,35 +200,51 @@ async function publishPost({ postId }) {
       results.push({ platform, error: 'unknown_platform' });
       continue;
     }
-    const connection = await connectionsService.getConnectionWithTokens({
+    // Fan out to every connected account for this platform. If the
+    // user has two Instagrams connected, the post goes to both. Each
+    // attempt is recorded as its own run row so we can show per-account
+    // outcomes in the UI.
+    const connections = await connectionsService.getAllConnectionsWithTokens({
       userEmail: post.user_email,
       platform,
     });
-    if (!connection) {
+    if (!connections.length) {
       await recordRun({ postId, platform, state: 'error', errorCode: 'not_connected' });
       results.push({ platform, error: 'not_connected' });
       continue;
     }
-    try {
-      const result = await publisher({ post, connection, assets });
-      await recordRun({
-        postId,
-        platform,
-        state: 'success',
-        platformPostId: result.platform_post_id || null,
-      });
-      results.push({ platform, ...result });
-    } catch (err) {
-      const apiErr = err?.response?.data?.error || {};
-      console.error(`[social-media] ${platform} publish failed:`, apiErr.message || err.message);
-      await recordRun({
-        postId,
-        platform,
-        state: 'error',
-        errorCode: apiErr.code ? String(apiErr.code) : (apiErr.type || 'publish_failed'),
-        errorMessage: apiErr.message || err.message,
-      });
-      results.push({ platform, error: apiErr.message || err.message });
+    for (const connection of connections) {
+      try {
+        const result = await publisher({ post, connection, assets });
+        await recordRun({
+          postId,
+          platform,
+          state: 'success',
+          platformPostId: result.platform_post_id || null,
+        });
+        results.push({
+          platform,
+          connection_id: connection.id,
+          account_handle: connection.account_handle,
+          ...result,
+        });
+      } catch (err) {
+        const apiErr = err?.response?.data?.error || {};
+        console.error(`[social-media] ${platform} publish failed for connection ${connection.id}:`, apiErr.message || err.message);
+        await recordRun({
+          postId,
+          platform,
+          state: 'error',
+          errorCode: apiErr.code ? String(apiErr.code) : (apiErr.type || 'publish_failed'),
+          errorMessage: apiErr.message || err.message,
+        });
+        results.push({
+          platform,
+          connection_id: connection.id,
+          account_handle: connection.account_handle,
+          error: apiErr.message || err.message,
+        });
+      }
     }
   }
 
