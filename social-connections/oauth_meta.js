@@ -21,23 +21,22 @@ const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v19.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
 const DIALOG_BASE = `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth`;
 
-// Scopes for the v1 publish path. Requires App Review for non-tester use.
-// Meta migrated the Instagram permission names mid-2024 to the
-// "Instagram Business" naming under the Use Cases system. The old
-// instagram_basic / instagram_content_publish names are rejected with
-// "Invalid Scopes" on apps created under the new Use Cases UI.
+// Scopes for the Facebook Login flow. Pages only.
+//
+// Why Instagram scopes are NOT here: Meta split Instagram out of
+// Facebook Login in mid-2024. For new apps created under the Use Cases
+// system, Instagram permissions (instagram_business_*) only work via
+// the separate "Instagram Login" OAuth flow at instagram.com, not via
+// facebook.com/dialog/oauth. Requesting Instagram scopes here returns
+// "Invalid Scopes". Instagram connection is handled by the parallel
+// oauth_instagram.js flow.
 const SCOPES = [
-  // Pages permissions, still under the classic names. Granted by the
-  // "Manage everything on your Page" use case in the Meta dashboard.
+  // Pages permissions. Granted by the "Manage everything on your Page"
+  // use case in the Meta dashboard.
   'pages_show_list',
   'pages_read_engagement',
   'pages_manage_posts',
   'pages_manage_metadata',
-  // Instagram Business API permissions, new names. Granted by the
-  // "Manage messaging & content on Instagram" use case.
-  'instagram_business_basic',
-  'instagram_business_content_publish',
-  // Business: granted by either the Page or the Instagram use case.
   'business_management',
 ];
 

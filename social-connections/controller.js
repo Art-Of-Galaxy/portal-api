@@ -10,6 +10,7 @@
 const service = require('./service');
 const oauthMeta = require('./oauth_meta');
 const oauthGoogle = require('./oauth_google');
+const oauthInstagram = require('./oauth_instagram');
 
 // Where the frontend lives. After OAuth Meta/Google redirects back, we
 // in turn redirect the BROWSER to the portal connections page so the
@@ -42,9 +43,17 @@ async function start(req, res) {
     if (!userEmail) {
       return res.status(400).json({ success: false, message: 'user_email is required to start OAuth.' });
     }
-    if (platform === 'meta' || platform === 'instagram' || platform === 'facebook') {
+    // Two separate Meta-side flows:
+    //   - 'meta' / 'facebook' => Facebook Login for Business, Pages only
+    //   - 'instagram'         => Instagram Business Login at instagram.com,
+    //                            IG account only (no FB Page link required)
+    if (platform === 'meta' || platform === 'facebook') {
       const url = oauthMeta.buildAuthorizationUrl({ userEmail });
       return res.status(200).json({ success: true, platform: 'meta', authorize_url: url });
+    }
+    if (platform === 'instagram') {
+      const url = oauthInstagram.buildAuthorizationUrl({ userEmail });
+      return res.status(200).json({ success: true, platform: 'instagram', authorize_url: url });
     }
     if (platform === 'youtube' || platform === 'google') {
       const url = oauthGoogle.buildAuthorizationUrl({ userEmail });
@@ -179,6 +188,58 @@ async function callbackGoogle(req, res) {
   }
 }
 
+// Instagram Business Login callback: returns ONE Instagram account per
+// OAuth round. Stored with meta.source='instagram-oauth' so the
+// publisher knows to hit graph.instagram.com.
+async function callbackInstagram(req, res) {
+  try {
+    const { code, state, error: errParam, error_description } = req.query || {};
+    if (errParam) {
+      console.warn('[ig-callback] user denied:', errParam, error_description);
+      return res.redirect(landingUrl({ status: 'denied', error: errParam }));
+    }
+    if (!code) {
+      return res.redirect(landingUrl({ status: 'error', error: 'missing_code' }));
+    }
+    const verified = oauthInstagram.verifyState(state);
+    if (!verified?.user_email) {
+      return res.redirect(landingUrl({ status: 'error', error: 'bad_state' }));
+    }
+    const userEmail = verified.user_email;
+
+    const short = await oauthInstagram.exchangeCodeForToken(code);
+    const long = await oauthInstagram.exchangeForLongLivedToken(short.access_token);
+    let me = {};
+    try { me = await oauthInstagram.fetchSelf(long.access_token); }
+    catch (e) { console.warn('[ig-callback] fetchSelf failed:', e.message); }
+
+    const expiresAt = long.expires_in
+      ? new Date(Date.now() + Number(long.expires_in) * 1000)
+      : null;
+
+    await service.upsertConnection({
+      userEmail,
+      platform: 'instagram',
+      accountId: String(me.user_id || short.user_id),
+      accountHandle: me.username || null,
+      accountName: me.name || me.username || null,
+      accessToken: long.access_token,
+      scope: oauthInstagram.SCOPES.join(','),
+      meta: {
+        source: 'instagram-oauth',
+        account_type: me.account_type || null,
+        avatar: me.profile_picture_url || null,
+      },
+      expiresAt,
+    });
+
+    return res.redirect(landingUrl({ status: 'ok', connected: '1' }));
+  } catch (err) {
+    console.error('social-connections/callback-instagram error:', err?.response?.data || err.message || err);
+    return res.redirect(landingUrl({ status: 'error', error: 'instagram_callback_failed' }));
+  }
+}
+
 // ---------- list / disconnect ----------
 
 async function list(req, res) {
@@ -214,4 +275,4 @@ async function destroy(req, res) {
   }
 }
 
-module.exports = { start, callbackMeta, callbackGoogle, list, destroy };
+module.exports = { start, callbackMeta, callbackGoogle, callbackInstagram, list, destroy };

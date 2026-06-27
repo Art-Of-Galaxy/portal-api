@@ -9,6 +9,7 @@ router.post('/start/:platform', controller.start);
 // redirect, we exchange the code and redirect them back to the portal UI).
 router.get('/callback/meta', controller.callbackMeta);
 router.get('/callback/google', controller.callbackGoogle);
+router.get('/callback/instagram', controller.callbackInstagram);
 
 // List the calling user's connected accounts.
 router.get('/', controller.list);

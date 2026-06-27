@@ -10,7 +10,17 @@
 const axios = require('axios');
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v19.0';
-const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
+const FB_GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
+const IG_GRAPH_BASE = 'https://graph.instagram.com/v22.0';
+
+// Pick the right Graph base for this connection. Connections created
+// via the classic Pages + IG flow (oauth_meta.js) use the Page access
+// token and graph.facebook.com. Connections created via the direct
+// Instagram Business Login (oauth_instagram.js) carry their own IG
+// access token and must hit graph.instagram.com.
+function graphBaseFor(connection) {
+  return connection?.meta?.source === 'instagram-oauth' ? IG_GRAPH_BASE : FB_GRAPH_BASE;
+}
 
 function captionWithBullets({ caption, hashtags, slides }) {
   const parts = [];
@@ -27,16 +37,16 @@ function captionWithBullets({ caption, hashtags, slides }) {
   return parts.join('\n\n');
 }
 
-async function createImageContainer({ igUserId, accessToken, imageUrl, caption }) {
-  const url = `${GRAPH_BASE}/${igUserId}/media`;
+async function createImageContainer({ base, igUserId, accessToken, imageUrl, caption }) {
+  const url = `${base}/${igUserId}/media`;
   const res = await axios.post(url, null, {
     params: { image_url: imageUrl, caption, access_token: accessToken },
   });
   return res.data?.id;
 }
 
-async function createReelsContainer({ igUserId, accessToken, videoUrl, caption }) {
-  const url = `${GRAPH_BASE}/${igUserId}/media`;
+async function createReelsContainer({ base, igUserId, accessToken, videoUrl, caption }) {
+  const url = `${base}/${igUserId}/media`;
   const res = await axios.post(url, null, {
     params: {
       media_type: 'REELS',
@@ -51,8 +61,8 @@ async function createReelsContainer({ igUserId, accessToken, videoUrl, caption }
 
 // Reels containers need polling because Meta processes the video
 // asynchronously. We poll up to ~3 minutes; longer = caller can retry.
-async function waitForContainerReady({ containerId, accessToken, intervalMs = 5000, timeoutMs = 3 * 60 * 1000 }) {
-  const url = `${GRAPH_BASE}/${containerId}`;
+async function waitForContainerReady({ base, containerId, accessToken, intervalMs = 5000, timeoutMs = 3 * 60 * 1000 }) {
+  const url = `${base}/${containerId}`;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const res = await axios.get(url, { params: { fields: 'status_code,status', access_token: accessToken } });
@@ -66,8 +76,8 @@ async function waitForContainerReady({ containerId, accessToken, intervalMs = 50
   throw new Error(`Instagram container ${containerId} did not finish in time.`);
 }
 
-async function publishContainer({ igUserId, accessToken, containerId }) {
-  const url = `${GRAPH_BASE}/${igUserId}/media_publish`;
+async function publishContainer({ base, igUserId, accessToken, containerId }) {
+  const url = `${base}/${igUserId}/media_publish`;
   const res = await axios.post(url, null, {
     params: { creation_id: containerId, access_token: accessToken },
   });
@@ -91,16 +101,17 @@ async function publish({ post, connection, assets }) {
     slides: post.spec?.slides,
   });
 
+  const base = graphBaseFor(connection);
   let containerId;
   if (post.content_type === 'reel') {
     if (!assets?.video_url) throw new Error('Reel publish requires a video_url');
-    containerId = await createReelsContainer({ igUserId, accessToken, videoUrl: assets.video_url, caption });
-    await waitForContainerReady({ containerId, accessToken });
+    containerId = await createReelsContainer({ base, igUserId, accessToken, videoUrl: assets.video_url, caption });
+    await waitForContainerReady({ base, containerId, accessToken });
   } else {
     if (!assets?.cover_url) throw new Error('Instagram publish requires a cover_url');
-    containerId = await createImageContainer({ igUserId, accessToken, imageUrl: assets.cover_url, caption });
+    containerId = await createImageContainer({ base, igUserId, accessToken, imageUrl: assets.cover_url, caption });
   }
-  const mediaId = await publishContainer({ igUserId, accessToken, containerId });
+  const mediaId = await publishContainer({ base, igUserId, accessToken, containerId });
   return {
     platform: 'instagram',
     platform_post_id: mediaId,
