@@ -215,18 +215,26 @@ async function library(req, res) {
       where.push(`p.status = $${params.length}`);
     }
 
+    // Error counting cutoff: only runs from the CURRENT lifecycle
+    // matter. If the post is currently published, any error rows from
+    // before published_at are leftovers from earlier failed attempts
+    // that have since succeeded - they should not surface as errors
+    // anymore. For non-published posts (draft/scheduled/failed) we
+    // count all error runs.
     const rows = await poll.query(
       `SELECT p.id, p.content_type, p.caption, p.hashtags, p.platforms, p.status,
               p.scheduled_for, p.published_at, p.assets_json, p.spec_json,
               p.metrics_json, p.created_at, p.updated_at,
-              -- Per-post run summary: how many succeeded / failed and the
-              -- most recent error message. Lets the hub show a clear
-              -- "X of Y published, look at platform Z" indicator even
-              -- when the overall status is 'published'.
               (SELECT COUNT(*) FROM tbl_social_post_runs r
-                 WHERE r.post_id = p.id AND r.state = 'success')::int AS run_success_count,
+                 WHERE r.post_id = p.id
+                   AND r.state = 'success'
+                   AND (p.published_at IS NULL OR r.started_at >= p.published_at))::int
+                AS run_success_count,
               (SELECT COUNT(*) FROM tbl_social_post_runs r
-                 WHERE r.post_id = p.id AND r.state = 'error')::int AS run_error_count,
+                 WHERE r.post_id = p.id
+                   AND r.state = 'error'
+                   AND (p.published_at IS NULL OR r.started_at > p.published_at))::int
+                AS run_error_count,
               (SELECT json_build_object(
                         'platform', r.platform,
                         'code', r.error_code,
@@ -234,7 +242,9 @@ async function library(req, res) {
                         'at', r.started_at
                       )
                  FROM tbl_social_post_runs r
-                WHERE r.post_id = p.id AND r.state = 'error'
+                WHERE r.post_id = p.id
+                  AND r.state = 'error'
+                  AND (p.published_at IS NULL OR r.started_at > p.published_at)
                 ORDER BY r.started_at DESC LIMIT 1) AS last_error
          FROM tbl_social_posts p
         WHERE ${where.join(' AND ')}
@@ -246,8 +256,10 @@ async function library(req, res) {
     const posts = (rows || []).map((r) => {
       const success = Number(r.run_success_count || 0);
       const errors = Number(r.run_error_count || 0);
-      // Derived status: a row marked 'published' that had any errored
-      // attempts is partially published (some platforms failed).
+      // Partial only when the post is currently published AND there's
+      // a fresh error (run after published_at). The SQL above already
+      // filters out stale errors, so a successful republish wipes the
+      // "partial" indicator on the next library load.
       let derivedStatus = r.status;
       if (r.status === 'published' && errors > 0) derivedStatus = 'partial';
       return {
