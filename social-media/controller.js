@@ -208,39 +208,68 @@ async function library(req, res) {
     const filter = String(req.query.filter || 'all').toLowerCase();
 
     const allowed = new Set(['all', 'draft', 'scheduled', 'published', 'failed']);
-    const where = ['user_email = $1'];
+    const where = ['p.user_email = $1'];
     const params = [userEmail];
     if (allowed.has(filter) && filter !== 'all') {
       params.push(filter);
-      where.push(`status = $${params.length}`);
+      where.push(`p.status = $${params.length}`);
     }
 
     const rows = await poll.query(
-      `SELECT id, content_type, caption, hashtags, platforms, status,
-              scheduled_for, published_at, assets_json, spec_json, metrics_json,
-              created_at, updated_at
-         FROM tbl_social_posts
+      `SELECT p.id, p.content_type, p.caption, p.hashtags, p.platforms, p.status,
+              p.scheduled_for, p.published_at, p.assets_json, p.spec_json,
+              p.metrics_json, p.created_at, p.updated_at,
+              -- Per-post run summary: how many succeeded / failed and the
+              -- most recent error message. Lets the hub show a clear
+              -- "X of Y published, look at platform Z" indicator even
+              -- when the overall status is 'published'.
+              (SELECT COUNT(*) FROM tbl_social_post_runs r
+                 WHERE r.post_id = p.id AND r.state = 'success')::int AS run_success_count,
+              (SELECT COUNT(*) FROM tbl_social_post_runs r
+                 WHERE r.post_id = p.id AND r.state = 'error')::int AS run_error_count,
+              (SELECT json_build_object(
+                        'platform', r.platform,
+                        'code', r.error_code,
+                        'message', r.error_message,
+                        'at', r.started_at
+                      )
+                 FROM tbl_social_post_runs r
+                WHERE r.post_id = p.id AND r.state = 'error'
+                ORDER BY r.started_at DESC LIMIT 1) AS last_error
+         FROM tbl_social_posts p
         WHERE ${where.join(' AND ')}
-        ORDER BY COALESCE(scheduled_for, published_at, updated_at) DESC
+        ORDER BY COALESCE(p.scheduled_for, p.published_at, p.updated_at) DESC
         LIMIT 60`,
       params
     );
 
-    const posts = (rows || []).map((r) => ({
-      id: r.id,
-      content_type: r.content_type,
-      caption: r.caption,
-      hashtags: r.hashtags,
-      platforms: String(r.platforms || '').split(',').filter(Boolean),
-      status: r.status,
-      scheduled_for: r.scheduled_for,
-      published_at: r.published_at,
-      cover_url: r.assets_json?.cover_url || null,
-      spec: r.spec_json,
-      metrics: r.metrics_json || null,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-    }));
+    const posts = (rows || []).map((r) => {
+      const success = Number(r.run_success_count || 0);
+      const errors = Number(r.run_error_count || 0);
+      // Derived status: a row marked 'published' that had any errored
+      // attempts is partially published (some platforms failed).
+      let derivedStatus = r.status;
+      if (r.status === 'published' && errors > 0) derivedStatus = 'partial';
+      return {
+        id: r.id,
+        content_type: r.content_type,
+        caption: r.caption,
+        hashtags: r.hashtags,
+        platforms: String(r.platforms || '').split(',').filter(Boolean),
+        status: r.status,
+        derived_status: derivedStatus, // 'draft' | 'scheduled' | 'published' | 'partial' | 'failed'
+        run_success_count: success,
+        run_error_count: errors,
+        last_error: r.last_error || null,
+        scheduled_for: r.scheduled_for,
+        published_at: r.published_at,
+        cover_url: r.assets_json?.cover_url || null,
+        spec: r.spec_json,
+        metrics: r.metrics_json || null,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      };
+    });
 
     return res.status(200).json({ success: true, posts });
   } catch (err) {

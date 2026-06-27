@@ -59,9 +59,13 @@ async function createReelsContainer({ base, igUserId, accessToken, videoUrl, cap
   return res.data?.id;
 }
 
-// Reels containers need polling because Meta processes the video
-// asynchronously. We poll up to ~3 minutes; longer = caller can retry.
-async function waitForContainerReady({ base, containerId, accessToken, intervalMs = 5000, timeoutMs = 3 * 60 * 1000 }) {
+// Reels need polling because Meta processes the video asynchronously
+// (transcoding takes time). Image containers ALSO need polling,
+// despite Meta's docs implying otherwise: if you call media_publish
+// before the image is fully ingested you get "Media ID is not
+// available". Image polling is much faster (1-2s usually) so we use
+// a shorter timeout. The same helper handles both.
+async function waitForContainerReady({ base, containerId, accessToken, intervalMs = 2000, timeoutMs = 3 * 60 * 1000 }) {
   const url = `${base}/${containerId}`;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -71,6 +75,7 @@ async function waitForContainerReady({ base, containerId, accessToken, intervalM
     if (code === 'ERROR' || code === 'EXPIRED') {
       throw new Error(`Instagram container ${containerId} ended in state ${code}: ${res.data?.status || ''}`);
     }
+    // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(`Instagram container ${containerId} did not finish in time.`);
@@ -81,7 +86,15 @@ async function publishContainer({ base, igUserId, accessToken, containerId }) {
   const res = await axios.post(url, null, {
     params: { creation_id: containerId, access_token: accessToken },
   });
-  return res.data?.id;
+  const mediaId = res.data?.id;
+  // Instagram occasionally returns 200 with no id when the container
+  // isn't ready. Surface a clear error so the publisher logs it.
+  if (!mediaId) {
+    const err = new Error(`Instagram media_publish returned no id (container ${containerId} may not be ready)`);
+    err.shopify = res.data;
+    throw err;
+  }
+  return mediaId;
 }
 
 // Connection.meta.linked_page_id is what the Pages OAuth callback stored.
@@ -106,10 +119,14 @@ async function publish({ post, connection, assets }) {
   if (post.content_type === 'reel') {
     if (!assets?.video_url) throw new Error('Reel publish requires a video_url');
     containerId = await createReelsContainer({ base, igUserId, accessToken, videoUrl: assets.video_url, caption });
-    await waitForContainerReady({ base, containerId, accessToken });
+    // Reels: poll up to 3 minutes for transcoding.
+    await waitForContainerReady({ base, containerId, accessToken, intervalMs: 5000, timeoutMs: 3 * 60 * 1000 });
   } else {
     if (!assets?.cover_url) throw new Error('Instagram publish requires a cover_url');
     containerId = await createImageContainer({ base, igUserId, accessToken, imageUrl: assets.cover_url, caption });
+    // Images: poll up to 30s. Usually finishes in 1-3s but fal/S3
+    // URLs that need a fetch round-trip can take a bit longer.
+    await waitForContainerReady({ base, containerId, accessToken, intervalMs: 1500, timeoutMs: 30 * 1000 });
   }
   const mediaId = await publishContainer({ base, igUserId, accessToken, containerId });
   return {
