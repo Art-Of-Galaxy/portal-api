@@ -5,6 +5,7 @@
 const { poll } = require('../config/dbconfig');
 const shopifyService = require('../shopify-connections/service');
 const adminApi = require('../shopify-connections/admin_api');
+const blogService = require('./service');
 
 async function loadArticle(id) {
   const rows = await poll.query(
@@ -73,24 +74,34 @@ async function uploadFeaturedToShopify({ conn, featured }) {
 //   1. spec_json.target_blog_id (per-article override the user picked)
 //   2. autopilot.blog_id (when this article came from an autopilot)
 //   3. connection.default_blog_id (chosen at connect time)
+//
+// We need the handle (for the article's public URL inside schema), but
+// the user-saved/autopilot rows only store id + title. Look up handle
+// via listBlogs when we don't already have it. Cheap GraphQL.
 async function resolveBlogId(article, conn) {
-  if (article.spec_json?.target_blog_id) return { id: article.spec_json.target_blog_id, title: article.spec_json.target_blog_title || null };
-  if (article.autopilot_id) {
+  let target = null;
+  if (article.spec_json?.target_blog_id) target = { id: article.spec_json.target_blog_id, title: article.spec_json.target_blog_title || null, handle: null };
+  if (!target && article.autopilot_id) {
     const rows = await poll.query(
       `SELECT blog_id, blog_title FROM tbl_blog_autopilots WHERE id = $1 LIMIT 1`,
       [article.autopilot_id]
     );
     const r = (rows || [])[0];
-    if (r?.blog_id) return { id: r.blog_id, title: r.blog_title || null };
+    if (r?.blog_id) target = { id: r.blog_id, title: r.blog_title || null, handle: null };
   }
-  if (conn?.default_blog_id) return { id: conn.default_blog_id, title: conn.default_blog_title || null };
-  // Last resort: pick the first blog on the shop.
+  if (!target && conn?.default_blog_id) {
+    target = { id: conn.default_blog_id, title: conn.default_blog_title || null, handle: null };
+  }
+  // Look up the handle from Shopify if missing.
   try {
     const blogs = await adminApi.listBlogs({ shop: conn.shop_domain, accessToken: conn.access_token });
-    return blogs[0] ? { id: blogs[0].id, title: blogs[0].title } : null;
+    if (!target) return blogs[0] ? { id: blogs[0].id, title: blogs[0].title, handle: blogs[0].handle } : null;
+    const match = blogs.find((b) => String(b.id) === String(target.id));
+    if (match) target.handle = match.handle;
   } catch {
-    return null;
+    // Non-fatal: schema URLs will fall back to "news" as the blog handle.
   }
+  return target;
 }
 
 async function publishArticle({ articleId, publishImmediately = true }) {
@@ -114,12 +125,35 @@ async function publishArticle({ articleId, publishImmediately = true }) {
 
   const spec = article.spec_json || {};
   const featured = article.assets_json?.featured || null;
-  const bodyHtml = article.assets_json?.body_html || '';
+  // We always recompose at publish so JSON-LD has the real shop URLs +
+  // article handle baked in. Generation-time body_html had FAQ schema
+  // only; this pass adds BlogPosting + Breadcrumb + Organization.
+  const customInlineImageUrl = article.brief_json?.inline_image_url || null;
 
   let featuredUrl = null;
   if (featured?.url) {
     featuredUrl = await uploadFeaturedToShopify({ conn, featured });
   }
+  const publishedIso = publishImmediately ? new Date().toISOString() : (article.scheduled_for?.toISOString?.() || new Date().toISOString());
+  const handleForUrl = article.handle || spec.handle || '';
+  const blogHandleForUrl = blog.handle || (blog.title || 'news').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const shopContext = {
+    shopDomain: conn.shop_domain,
+    primaryDomain: conn.meta?.primary_domain || conn.shop_domain,
+    shopName: conn.shop_name || conn.shop_domain,
+    blogHandle: blogHandleForUrl,
+    blogTitle: blog.title || null,
+    articleUrl: `https://${conn.meta?.primary_domain || conn.shop_domain}/blogs/${blogHandleForUrl}/${handleForUrl}`,
+    logoUrl: conn.meta?.logo_url || null,
+  };
+  const bodyHtml = blogService.composeBodyHtml({
+    spec,
+    customImageUrl: customInlineImageUrl,
+    shopContext,
+    featuredUrl,
+    publishedIso,
+  });
+
   console.log('[blog-engine] publish ready', {
     articleId,
     shop: conn.shop_domain,
@@ -140,9 +174,10 @@ async function publishArticle({ articleId, publishImmediately = true }) {
       tags: typeof article.tags === 'string' && article.tags
         ? article.tags.split(',').map((t) => t.trim()).filter(Boolean)
         : (Array.isArray(spec.tags) ? spec.tags : []),
-      authorName: 'Editorial',
+      authorName: spec.author_name || 'Editorial',
       publishedAt: publishImmediately ? new Date().toISOString() : null,
       imageUrl: featuredUrl,
+      imageAlt: spec.hero_alt || spec.title || article.title || '',
       metaTitle: article.meta_title || spec.meta_title,
       metaDescription: article.meta_description || spec.meta_description,
     });

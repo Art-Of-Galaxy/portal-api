@@ -147,6 +147,7 @@ async function createArticle({
   tags,
   publishedAt,    // ISO string OR null for draft
   imageUrl,       // featured image; pass our generated fal.ai URL or a user-uploaded URL
+  imageAlt,       // alt text for the featured image (SEO + accessibility)
   metaTitle,
   metaDescription,
 }) {
@@ -161,7 +162,7 @@ async function createArticle({
       tags: Array.isArray(tags) ? tags : (typeof tags === 'string' ? tags.split(',').map((t) => t.trim()).filter(Boolean) : undefined),
       isPublished: !!publishedAt,
       publishDate: publishedAt || undefined,
-      image: imageUrl ? { url: imageUrl } : undefined,
+      image: imageUrl ? { url: imageUrl, altText: imageAlt || undefined } : undefined,
     },
   };
   const data = await graphql({
