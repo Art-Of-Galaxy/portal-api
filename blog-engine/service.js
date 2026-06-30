@@ -288,11 +288,22 @@ function withReferenceImages(extras, model, urls) {
 }
 
 async function runClaude({ brief, model, referenceScrape }) {
+  // We used to pass the full OUTPUT_SCHEMA via output_config for
+  // constrained decoding, but the schema grew large enough (sections +
+  // data_visuals + faqs + cta_banner + author + schema + ...) that
+  // Anthropic's grammar compiler started timing out with 400
+  // "Grammar compilation timed out". Sonnet 4.6 reliably returns
+  // valid JSON when instructed to via the system prompt, so we now
+  // drop the strict mode and just ask for JSON conforming to the
+  // documented schema. We still JSON.parse the text block and surface
+  // a clear error if it's malformed.
   const system = [
     { type: 'text', text: SYSTEM_PROMPT },
     {
       type: 'text',
-      text: `Output schema (the JSON you return MUST conform):\n${JSON.stringify(OUTPUT_SCHEMA)}`,
+      text:
+        `Output schema (the JSON you return MUST conform). Return ONLY the JSON, no surrounding prose, no markdown fences.\n`
+        + JSON.stringify(OUTPUT_SCHEMA),
       cache_control: { type: 'ephemeral' },
     },
   ];
@@ -317,11 +328,20 @@ async function runClaude({ brief, model, referenceScrape }) {
       role: 'user',
       content: userParts.join('\n\n'),
     }],
-    output_config: { format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
   });
   const textBlock = response.content.find((b) => b.type === 'text');
   if (!textBlock) throw new Error('Claude returned no text block');
-  return JSON.parse(textBlock.text);
+  const raw = String(textBlock.text || '').trim();
+  // Strip an optional ```json ... ``` fence Claude sometimes wraps
+  // around output despite the instruction.
+  const stripped = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  try {
+    return JSON.parse(stripped);
+  } catch (err) {
+    console.error('[blog-engine] failed to JSON.parse model output:', err.message);
+    console.error('[blog-engine] raw output (first 500 chars):', stripped.slice(0, 500));
+    throw Object.assign(new Error('Article generation returned invalid JSON. Try again.'), { status: 502 });
+  }
 }
 
 // Generate a featured image via fal.ai unless the user gave us one.
