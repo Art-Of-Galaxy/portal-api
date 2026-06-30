@@ -9,6 +9,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const imageGeneration = require('../helper/image_generation');
 const s3 = require('../helper/s3_storage');
+const webScraper = require('../helper/web_scraper');
 
 const ALLOWED_MODELS = new Set([
   'claude-opus-4-7',
@@ -70,7 +71,7 @@ Add 1-3 infographic blocks where they genuinely help comprehension. Skip them if
 - key_takeaways: 3-5 bullet summary placed near the end of the article. items: [{text: "Take ashwagandha at night for sleep support"}]
 - process_steps: numbered steps with title + 1-sentence body. Use for "how to" sections. items: [{title: "Brew", body: "Steep one teabag in hot water for 5 minutes."}]
 - pros_cons: two-column lists. Use when comparing one option's tradeoffs. items: [{label: "Pure formulation, no fillers", kind: "pro"}, {label: "Higher price per serving", kind: "con"}]
-- comparison: header row + 2-4 product/option rows. items: first item is the header object with column labels {label: "", calm: "Calm Stack", focus: "Focus Stack", energy: "Energy Stack"}, then each row {label: "Caffeine free", calm: "Yes", focus: "No", energy: "No"}.
+- comparison: header row + 2-4 product/option rows. Use the FIXED column keys col1/col2/col3/col4. items[0] is the header with column display names {label: "", col1: "Calm Stack", col2: "Focus Stack", col3: "Energy Stack"}, then each row {label: "Caffeine free", col1: "Yes", col2: "No", col3: "No"}.
 
 Each visual needs:
 - type: one of the 5 above
@@ -203,7 +204,25 @@ const OUTPUT_SCHEMA = {
             description: 'Items inside the visual. Shape depends on type. stat_grid: [{value, label, sub?}]. key_takeaways: [{text}]. process_steps: [{title, body}]. pros_cons: [{label, kind: "pro"|"con"}]. comparison: first item is header [{label, ...columns}], rest are rows.',
             items: {
               type: 'object',
-              additionalProperties: true,
+              additionalProperties: false,
+              properties: {
+                // Shared / generic fields used across visual types.
+                // Anthropic's structured output requires additionalProperties:false,
+                // so we enumerate every key any visual type might use.
+                // None are required individually; per-type validation
+                // happens at render time in renderVisual().
+                value:  { type: 'string', description: 'stat_grid: the big number/text.' },
+                label:  { type: 'string', description: 'stat_grid/comparison: short label. pros_cons: the pro/con copy.' },
+                sub:    { type: 'string', description: 'stat_grid: tiny sub-label under the number.' },
+                text:   { type: 'string', description: 'key_takeaways: the bullet text.' },
+                title:  { type: 'string', description: 'process_steps: step heading.' },
+                body:   { type: 'string', description: 'process_steps: 1-sentence step explanation.' },
+                kind:   { type: 'string', enum: ['pro', 'con'], description: 'pros_cons only.' },
+                col1:   { type: 'string', description: 'comparison: column 1 cell value.' },
+                col2:   { type: 'string', description: 'comparison: column 2 cell value.' },
+                col3:   { type: 'string', description: 'comparison: column 3 cell value.' },
+                col4:   { type: 'string', description: 'comparison: column 4 cell value.' },
+              },
             },
           },
         },
@@ -268,7 +287,7 @@ function withReferenceImages(extras, model, urls) {
   return extras;
 }
 
-async function runClaude({ brief, model }) {
+async function runClaude({ brief, model, referenceScrape }) {
   const system = [
     { type: 'text', text: SYSTEM_PROMPT },
     {
@@ -277,13 +296,26 @@ async function runClaude({ brief, model }) {
       cache_control: { type: 'ephemeral' },
     },
   ];
+  // Build the user message. Reference website context (if any) goes
+  // first so the writer treats it as background, then the brief.
+  const userParts = [];
+  if (referenceScrape) {
+    userParts.push(webScraper.formatScrapeForPrompt(referenceScrape));
+    userParts.push(
+      'Use the reference website above for factual grounding, structural inspiration, and tone matching. '
+      + 'DO NOT copy sentences verbatim. The article you generate must be original, longer-form, and SEO-optimized to the brief below. '
+      + 'Cite or paraphrase facts when relevant. If the reference does not cover something needed by the brief, fall back on best-practice knowledge.'
+    );
+  }
+  userParts.push(`Brief:\n${JSON.stringify(brief, null, 2)}`);
+
   const response = await client.messages.create({
     model,
     max_tokens: 8000,
     system,
     messages: [{
       role: 'user',
-      content: `Brief:\n${JSON.stringify(brief, null, 2)}`,
+      content: userParts.join('\n\n'),
     }],
     output_config: { format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
   });
@@ -587,7 +619,19 @@ async function generateArticle({ brief, requestedModel }) {
   const model = pickModel(requestedModel);
   const brandSlug = safeBrandSlug(brief.brand || keyword);
 
-  const spec = await runClaude({ brief, model });
+  // Optional: if the brief carries a reference URL, scrape it now and
+  // pass the digest into Claude as context. Failure is non-fatal so a
+  // bad URL doesn't block the article (we log and continue).
+  let referenceScrape = null;
+  if (brief.reference_url && String(brief.reference_url).trim()) {
+    try {
+      referenceScrape = await webScraper.scrapeReferenceUrl(brief.reference_url);
+    } catch (err) {
+      console.warn('[blog-engine] reference URL scrape failed (continuing without):', err.message || err);
+    }
+  }
+
+  const spec = await runClaude({ brief, model, referenceScrape });
 
   // Image strategy:
   // 1. User-provided featured image URL wins.
