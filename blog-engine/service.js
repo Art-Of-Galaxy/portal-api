@@ -18,6 +18,14 @@ const ALLOWED_MODELS = new Set([
 const DEFAULT_MODEL = process.env.BLOG_ENGINE_MODEL || 'claude-sonnet-4-6';
 const IMAGE_MODEL = process.env.BLOG_ENGINE_IMAGE_MODEL || 'fal-ai/nano-banana';
 
+// Toggle: when "true", the agent generates one fal.ai image per
+// section in addition to the featured image. Off by default to keep
+// fal.ai credit consumption predictable. Claude always writes the
+// per-section image_prompt + image_alt in the spec, regardless of
+// the toggle, so flipping it on later just starts producing images
+// without needing a regenerate.
+const INLINE_IMAGES_ENABLED = String(process.env.BLOG_ENGINE_INLINE_IMAGES || '').toLowerCase() === 'true';
+
 const client = new Anthropic();
 
 const SYSTEM_PROMPT = `You are the AOG Blog Engine, a senior SEO + GEO + AEO writer for Art of Galaxy clients publishing to Shopify.
@@ -49,6 +57,28 @@ Required structure of a great Shopify product/info blog:
 3. At least one comparison or spec table when the topic supports it (use semantic <table><thead><tbody>).
 4. Bullet/numbered lists for any steps or feature breakdowns.
 5. Internal links: use <a href="{{INTERNAL:slug-or-keyword}}">anchor</a> placeholders for 2-5 contextually relevant links.
+
+PER-SECTION IMAGES
+Every section must include an image_prompt and an image_alt, even though the publisher may or may not actually generate the image (controlled by an operator toggle). Write them as if they will be used:
+- image_prompt: concrete subject + composition + mood + palette that mirrors the section heading. Suitable for fal.ai. No on-image text.
+- image_alt: 8-14 words, describes the image and includes a contextual keyword naturally.
+
+INFOGRAPHICS (data_visuals)
+Add 1-3 infographic blocks where they genuinely help comprehension. Skip them if the topic does not call for one. Pick the type that fits:
+
+- stat_grid: 3-4 numeric callouts side by side. Use when you have real numbers (percentages, durations, counts). items: [{value: "87%", label: "of users felt calmer", sub: "in a 4-week study"}]
+- key_takeaways: 3-5 bullet summary placed near the end of the article. items: [{text: "Take ashwagandha at night for sleep support"}]
+- process_steps: numbered steps with title + 1-sentence body. Use for "how to" sections. items: [{title: "Brew", body: "Steep one teabag in hot water for 5 minutes."}]
+- pros_cons: two-column lists. Use when comparing one option's tradeoffs. items: [{label: "Pure formulation, no fillers", kind: "pro"}, {label: "Higher price per serving", kind: "con"}]
+- comparison: header row + 2-4 product/option rows. items: first item is the header object with column labels {label: "", calm: "Calm Stack", focus: "Focus Stack", energy: "Energy Stack"}, then each row {label: "Caffeine free", calm: "Yes", focus: "No", energy: "No"}.
+
+Each visual needs:
+- type: one of the 5 above
+- title: short heading for the visual (e.g. "How adaptogens work", "Calm vs Focus vs Energy", "Key takeaways")
+- place_after_anchor: a section anchor id from your sections array, OR "lead" for right after the lead, OR "before_faq" for just before the FAQ section.
+- items: array shaped per the type above.
+
+Do NOT pad: if the topic does not benefit from a visual of a given type, leave it out.
 
 HTML RULES (for section.html and lead)
 - Allowed tags: p, h2, h3, ul, ol, li, strong, em, a, table, thead, tbody, tr, th, td, figure, figcaption, blockquote.
@@ -116,11 +146,13 @@ const OUTPUT_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['heading', 'anchor', 'html'],
+        required: ['heading', 'anchor', 'html', 'image_prompt', 'image_alt'],
         properties: {
           heading: { type: 'string', description: 'H2 heading text. Conversational + keyword-relevant.' },
           anchor: { type: 'string', description: 'URL fragment id (lowercase, hyphenated, no spaces) for the TOC link.' },
           html: { type: 'string', description: 'Section body HTML. Starts with a 50-80 word direct-answer <p>, then lists/tables/sub-headings. Allowed tags: p, h3, ul, ol, li, strong, em, a, table, thead, tbody, tr, th, td, figure, figcaption, blockquote. NO h1, h2, img, script, inline styles.' },
+          image_prompt: { type: 'string', description: 'fal.ai prompt for an inline section image that visually represents the section heading. Concrete subject + composition + mood + palette. No on-image text.' },
+          image_alt: { type: 'string', description: 'Alt text for the inline section image (8-14 words, includes contextual keyword naturally).' },
         },
       },
     },
@@ -146,6 +178,35 @@ const OUTPUT_SCHEMA = {
         body: { type: 'string', description: 'One sentence elaborating the value.' },
         button_text: { type: 'string', description: 'Action verb + value (e.g. "Shop the Calm Stack").' },
         button_url: { type: 'string', description: 'Optional internal URL placeholder, e.g. "{{INTERNAL:calm-stack}}". May be empty.' },
+      },
+    },
+    data_visuals: {
+      type: 'array',
+      description: 'Infographic blocks the agent decides to insert into the article. Pick the type that fits the topic. Only include visuals that genuinely help the reader, do not pad. Aim for 1-3 per article.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['type', 'place_after_anchor', 'title', 'items'],
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['stat_grid', 'key_takeaways', 'process_steps', 'pros_cons', 'comparison'],
+            description: 'stat_grid: 3-4 numeric callouts. key_takeaways: 3-5 bullet summary. process_steps: numbered steps with titles + body. pros_cons: two-column lists. comparison: header row + product/option rows.',
+          },
+          place_after_anchor: {
+            type: 'string',
+            description: 'Where to insert the visual. Use a section anchor id, or "lead" to place right after the lead, or "before_faq" to place just before the FAQ.',
+          },
+          title: { type: 'string', description: 'Heading shown above the visual (e.g. "Key takeaways", "How it works"). Required.' },
+          items: {
+            type: 'array',
+            description: 'Items inside the visual. Shape depends on type. stat_grid: [{value, label, sub?}]. key_takeaways: [{text}]. process_steps: [{title, body}]. pros_cons: [{label, kind: "pro"|"con"}]. comparison: first item is header [{label, ...columns}], rest are rows.',
+            items: {
+              type: 'object',
+              additionalProperties: true,
+            },
+          },
+        },
       },
     },
     image_prompt: {
@@ -274,6 +335,60 @@ function anchorSlug(value) {
     .slice(0, 60);
 }
 
+// Render one infographic block as semantic HTML. The Shopify theme is
+// expected to style the .aog-viz-* classes, but the markup is sensible
+// without any CSS so screenshots / RSS readers / plain rendering still
+// look clean. All text is escaped to prevent prompt-injected HTML.
+function renderVisual(visual) {
+  if (!visual || !Array.isArray(visual.items) || !visual.items.length) return '';
+  const title = visual.title ? `<h3 class="aog-viz-title">${escapeHtml(visual.title)}</h3>` : '';
+  switch (visual.type) {
+    case 'stat_grid': {
+      const cells = visual.items.map((it) => `
+        <div class="aog-stat">
+          <span class="aog-stat-num">${escapeHtml(it.value || '')}</span>
+          <span class="aog-stat-label">${escapeHtml(it.label || '')}</span>
+          ${it.sub ? `<span class="aog-stat-sub">${escapeHtml(it.sub)}</span>` : ''}
+        </div>`).join('');
+      return `<aside class="aog-viz aog-viz-stat-grid">${title}<div class="aog-stat-row">${cells}</div></aside>`;
+    }
+    case 'key_takeaways': {
+      const lis = visual.items.map((it) => `<li>${escapeHtml(it.text || '')}</li>`).join('');
+      return `<aside class="aog-viz aog-viz-takeaways">${title}<ul>${lis}</ul></aside>`;
+    }
+    case 'process_steps': {
+      const steps = visual.items.map((it, i) => `
+        <li class="aog-step">
+          <span class="aog-step-num">${i + 1}</span>
+          <div class="aog-step-body">
+            <strong>${escapeHtml(it.title || '')}</strong>
+            ${it.body ? `<p>${escapeHtml(it.body)}</p>` : ''}
+          </div>
+        </li>`).join('');
+      return `<aside class="aog-viz aog-viz-steps">${title}<ol class="aog-steps">${steps}</ol></aside>`;
+    }
+    case 'pros_cons': {
+      const pros = visual.items.filter((it) => it.kind === 'pro').map((it) => `<li>${escapeHtml(it.label || '')}</li>`).join('');
+      const cons = visual.items.filter((it) => it.kind === 'con').map((it) => `<li>${escapeHtml(it.label || '')}</li>`).join('');
+      return `<aside class="aog-viz aog-viz-procons">${title}
+        <div class="aog-procons-row">
+          <div class="aog-procons-col aog-procons-pro"><h4>Pros</h4><ul>${pros}</ul></div>
+          <div class="aog-procons-col aog-procons-con"><h4>Cons</h4><ul>${cons}</ul></div>
+        </div></aside>`;
+    }
+    case 'comparison': {
+      const [header, ...rows] = visual.items;
+      if (!header) return '';
+      const cols = Object.keys(header).filter((k) => k !== 'label');
+      const thead = `<thead><tr><th></th>${cols.map((c) => `<th>${escapeHtml(header[c] || c)}</th>`).join('')}</tr></thead>`;
+      const tbody = `<tbody>${rows.map((r) => `<tr><th scope="row">${escapeHtml(r.label || '')}</th>${cols.map((c) => `<td>${escapeHtml(r[c] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+      return `<aside class="aog-viz aog-viz-comparison">${title}<table class="aog-comparison">${thead}${tbody}</table></aside>`;
+    }
+    default:
+      return '';
+  }
+}
+
 // Build the article body that Shopify will render. Order matches the
 // 2026 SEO checklist's recommended blog layout:
 //   1. Hero stats strip (reading time + author + date)
@@ -310,6 +425,20 @@ function composeBodyHtml({ spec, customImageUrl, shopContext, featuredUrl, publi
     parts.push(`<figure><img src="${customImageUrl}" alt="${escapeHtml(spec.hero_alt || spec.title || '')}" loading="lazy"/></figure>`);
   }
 
+  // Group infographic visuals by their place_after_anchor for easy
+  // injection. Keys: "lead" (after the lead paragraph), section anchor
+  // ids, and "before_faq" (just before the FAQ block).
+  const visuals = Array.isArray(spec.data_visuals) ? spec.data_visuals : [];
+  const visualsByAnchor = visuals.reduce((acc, v) => {
+    const key = anchorSlug(v.place_after_anchor || 'lead') || 'lead';
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(v);
+    return acc;
+  }, {});
+  if (visualsByAnchor.lead) {
+    visualsByAnchor.lead.forEach((v) => parts.push(renderVisual(v)));
+  }
+
   // 3. Table of contents from sections[]
   const sections = Array.isArray(spec.sections) ? spec.sections : [];
   if (sections.length >= 3) {
@@ -321,12 +450,23 @@ function composeBodyHtml({ spec, customImageUrl, shopContext, featuredUrl, publi
     parts.push('</ul></nav>');
   }
 
-  // 4. Sections with anchored H2s
+  // 4. Sections with anchored H2s. Inline image (when generated) sits
+  // between the H2 and the body so it acts as a visual anchor for the
+  // section. Alt text comes from spec.image_alt for accessibility + SEO.
+  // Infographic visuals matching this section's anchor are inserted at
+  // the end of the section.
   if (sections.length) {
     sections.forEach((s) => {
       const anchor = anchorSlug(s.anchor || s.heading);
       parts.push(`<h2 id="${anchor}">${escapeHtml(s.heading)}</h2>`);
+      if (s.image_url) {
+        const alt = escapeHtml(s.image_alt || s.heading || '');
+        parts.push(`<figure><img src="${escapeHtml(s.image_url)}" alt="${alt}" loading="lazy"/>${s.image_alt ? `<figcaption>${alt}</figcaption>` : ''}</figure>`);
+      }
       parts.push(s.html || '');
+      if (visualsByAnchor[anchor]) {
+        visualsByAnchor[anchor].forEach((v) => parts.push(renderVisual(v)));
+      }
     });
   } else if (spec.body_html) {
     // Backward compatibility for older spec shape (no sections[]).
@@ -344,6 +484,11 @@ function composeBodyHtml({ spec, customImageUrl, shopContext, featuredUrl, publi
       parts.push(`<p><a class="article-cta-btn" href="${escapeHtml(href)}">${escapeHtml(cta.button_text)}</a></p>`);
     }
     parts.push('</aside>');
+  }
+
+  // Visuals slotted to render just before the FAQ block.
+  if (visualsByAnchor.before_faq) {
+    visualsByAnchor.before_faq.forEach((v) => parts.push(renderVisual(v)));
   }
 
   // 6. FAQ block
@@ -460,6 +605,22 @@ async function generateArticle({ brief, requestedModel }) {
     if (gen) featured = { ...gen, source: 'fal' };
   }
 
+  // Inline section images: opt-in via BLOG_ENGINE_INLINE_IMAGES=true so
+  // fal.ai credit consumption stays predictable. When off, sections are
+  // text-only; alt + prompt fields are still in the spec so flipping the
+  // env on later starts generating without needing a regenerate.
+  if (INLINE_IMAGES_ENABLED && Array.isArray(spec.sections) && spec.sections.length) {
+    try {
+      spec.sections = await generateSectionImages({
+        sections: spec.sections,
+        brandSlug,
+        brief,
+      });
+    } catch (err) {
+      console.warn('[blog-engine] section image batch failed (continuing text-only):', err.message || err);
+    }
+  }
+
   const bodyHtml = composeBodyHtml({
     spec,
     customImageUrl: brief.inline_image_url || null,
@@ -472,6 +633,57 @@ async function generateArticle({ brief, requestedModel }) {
     featured,        // { url, content_type, source }
     body_html: bodyHtml,
   };
+}
+
+// Generate one inline image per section in parallel, bounded to avoid
+// burning credits / rate limits. Skips silently per section if fal.ai
+// errors so the article still publishes. Returns a copy of sections[]
+// with `image_url` and `image_content_type` attached where successful.
+async function generateSectionImages({ sections, brandSlug, brief }) {
+  if (!Array.isArray(sections) || !sections.length) return sections || [];
+  const out = sections.map((s) => ({ ...s }));
+  const CONCURRENCY = 3;
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const my = next; next += 1;
+      if (my >= out.length) return;
+      const s = out[my];
+      if (!s.image_prompt) continue;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await imageGeneration.generateImages({
+          prompt: s.image_prompt,
+          model: IMAGE_MODEL,
+          num_images: 1,
+          image_size: 'landscape_16_9',
+          extra_input: withReferenceImages({ aspect_ratio: '16:9', output_format: 'png' }, IMAGE_MODEL, referenceImageUrls(brief)),
+        });
+        const img = (r.images || [])[0];
+        if (!img?.url) continue;
+        if (s3.isConfigured()) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const uploaded = await s3.uploadFromUrl(img.url, {
+              prefix: `generated/blog-engine/${brandSlug}/sections`,
+              originalName: `${brandSlug}-section-${my + 1}.png`,
+            });
+            s.image_url = uploaded.url;
+            s.image_content_type = uploaded.contentType || 'image/png';
+            continue;
+          } catch (mirrorErr) {
+            console.warn('[blog-engine] section image S3 mirror failed:', mirrorErr.message || mirrorErr);
+          }
+        }
+        s.image_url = img.url;
+        s.image_content_type = img.content_type || 'image/png';
+      } catch (err) {
+        console.warn(`[blog-engine] section ${my + 1} image gen failed (continuing without):`, err.message || err);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, out.length) }, () => worker()));
+  return out;
 }
 
 // Standalone featured-image regeneration. Used by the Preview screen's

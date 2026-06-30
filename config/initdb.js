@@ -417,6 +417,101 @@ async function ensureDatabaseSchema() {
   `);
   await poll.query(`CREATE INDEX IF NOT EXISTS idx_blog_autopilots_active ON tbl_blog_autopilots (status, next_publish_at) WHERE status = 'active';`);
 
+  // ---------- WordPress Blog Engine ----------
+
+  // Connected WordPress sites (self-hosted + WordPress.com via app
+  // passwords). Same token-encryption pattern as the social + Shopify
+  // connections: AES-256-GCM via helper/social_tokens.js, never store
+  // the plaintext password.
+  //
+  // site_url is the canonical https://example.com (no trailing slash).
+  // username is the WP user the app password belongs to.
+  // default_category_id is the WP category we'll attach by default;
+  // null means "Uncategorized".
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_wordpress_connections (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255) NOT NULL,
+      site_url VARCHAR(512) NOT NULL,
+      site_name VARCHAR(255),
+      username VARCHAR(128) NOT NULL,
+      app_password_enc TEXT NOT NULL,
+      site_info JSONB,
+      default_category_id INTEGER,
+      default_category_name VARCHAR(255),
+      is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+      last_validated_at TIMESTAMPTZ,
+      state VARCHAR(16) NOT NULL DEFAULT 'connected',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_email, site_url, username)
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_wp_conn_user ON tbl_wordpress_connections (user_email, state);`);
+
+  // Generated WordPress articles. Mirror of tbl_blog_articles but
+  // pointing at a WP site instead of a Shopify shop. Same lifecycle:
+  // draft -> scheduled -> publishing -> published / failed.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_wp_articles (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255) NOT NULL,
+      wp_connection_id INTEGER REFERENCES tbl_wordpress_connections(id) ON DELETE SET NULL,
+      autopilot_id INTEGER,
+      mode VARCHAR(32) NOT NULL DEFAULT 'single',
+      keyword VARCHAR(255),
+      brief_json JSONB,
+      spec_json JSONB,
+      assets_json JSONB,
+      title TEXT,
+      handle VARCHAR(255),
+      meta_title TEXT,
+      meta_description TEXT,
+      tags TEXT,
+      seo_score INTEGER,
+      word_count INTEGER,
+      status VARCHAR(16) NOT NULL DEFAULT 'draft',
+      scheduled_for TIMESTAMPTZ,
+      published_at TIMESTAMPTZ,
+      wp_post_id VARCHAR(64),
+      wp_post_url TEXT,
+      error_code VARCHAR(64),
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_wp_articles_user_status ON tbl_wp_articles (user_email, status, updated_at DESC);`);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_wp_articles_due ON tbl_wp_articles (status, scheduled_for) WHERE status = 'scheduled';`);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_wp_articles_autopilot ON tbl_wp_articles (autopilot_id) WHERE autopilot_id IS NOT NULL;`);
+
+  // Autopilot configs for WordPress sites. Same shape as
+  // tbl_blog_autopilots, but tied to a WP connection.
+  await poll.query(`
+    CREATE TABLE IF NOT EXISTS tbl_wp_autopilots (
+      id SERIAL PRIMARY KEY,
+      user_email VARCHAR(255) NOT NULL,
+      wp_connection_id INTEGER NOT NULL REFERENCES tbl_wordpress_connections(id) ON DELETE CASCADE,
+      category_id INTEGER,
+      category_name VARCHAR(255),
+      keywords_json JSONB NOT NULL,
+      cadence VARCHAR(16) NOT NULL,
+      publish_time VARCHAR(16) NOT NULL DEFAULT '08:00',
+      timezone VARCHAR(64) DEFAULT 'UTC',
+      voice_json JSONB,
+      intent VARCHAR(32),
+      length VARCHAR(16),
+      queue_depth INTEGER NOT NULL DEFAULT 5,
+      status VARCHAR(16) NOT NULL DEFAULT 'active',
+      next_publish_at TIMESTAMPTZ,
+      last_drafted_at TIMESTAMPTZ,
+      published_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await poll.query(`CREATE INDEX IF NOT EXISTS idx_wp_autopilots_active ON tbl_wp_autopilots (status, next_publish_at) WHERE status = 'active';`);
+
   // Idempotent timezone migration. Earlier versions of these tables stored
   // scheduled_for / published_at / next_publish_at as TIMESTAMP (no zone).
   // The API + UI have always sent UTC ISO strings, so the stored values
