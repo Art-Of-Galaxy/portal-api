@@ -104,7 +104,9 @@ let get_projects = async (req, res) => {
       user_email: page.user_email,
     }));
 
-    res.status(200).json({ success: true, projects });
+    const payload = { success: true, projects };
+    if (response.pagination) payload.pagination = response.pagination;
+    res.status(200).json(payload);
   } catch (error) {
     console.error('Error fetching projects:', error);
     res.status(500).json({ success: false, message: describeError(error) });

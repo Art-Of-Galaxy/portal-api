@@ -122,7 +122,15 @@ exports.get_projects = async (req, res) => {
         (req && req.headers && req.headers['x-user-email'])
       );
 
-      const sql = `SELECT
+      // Optional pagination. Callers that don't supply limit get the
+      // whole list back (keeps the existing behaviour for internal calls).
+      const rawLimit = req?.body?.limit ?? req?.query?.limit;
+      const rawOffset = req?.body?.offset ?? req?.query?.offset;
+      const hasLimit = rawLimit !== undefined && rawLimit !== null && rawLimit !== '';
+      const limit = hasLimit ? Math.max(1, Math.min(100, Number(rawLimit) || 10)) : null;
+      const offset = hasLimit ? Math.max(0, Number(rawOffset) || 0) : 0;
+
+      const listSql = `SELECT
   p.id,
   p.project_name,
   p.assignee,
@@ -156,22 +164,48 @@ LEFT JOIN users AS u ON p.assign_to = u.id
 WHERE p.is_delete = 0
   AND p.user_email IS NOT NULL
   AND LOWER(p.user_email) = LOWER(?)
-ORDER BY p.id DESC;
+ORDER BY p.id DESC
+${hasLimit ? 'LIMIT ? OFFSET ?' : ''};
 `;
+      const listParams = hasLimit ? [userEmail || null, limit, offset] : [userEmail || null];
 
-      db_poll.query(sql, [userEmail || null], async (err, result) => {
+      db_poll.query(listSql, listParams, async (err, result) => {
         if (err) {
           console.error('Error executing query:', err);
           return reject({ success: false, message: 'Database error', error: err.message });
         }
 
-        if (result.length > 0) {
-          console.log('Projects fetched successfully');
-          return resolve({ success: true, data: result });
+        if (!hasLimit) {
+          return resolve({ success: true, data: result || [] });
         }
 
-        console.log('No projects found');
-        return resolve({ success: true, data: [] });
+        // Paginated call: also fetch the total count for the response envelope.
+        const countSql = `
+          SELECT COUNT(*) AS c
+            FROM tbl_projects AS p
+           WHERE p.is_delete = 0
+             AND p.user_email IS NOT NULL
+             AND LOWER(p.user_email) = LOWER(?)
+        `;
+        db_poll.query(countSql, [userEmail || null], (countErr, countResult) => {
+          if (countErr) {
+            console.error('Error counting projects:', countErr);
+            return reject({ success: false, message: 'Database error', error: countErr.message });
+          }
+          const row0 = Array.isArray(countResult) ? countResult[0] : countResult?.rows?.[0];
+          const total = Number(row0?.c || 0);
+          return resolve({
+            success: true,
+            data: result || [],
+            pagination: {
+              total,
+              limit,
+              offset,
+              has_more: (offset + (result?.length || 0)) < total,
+              next_offset: (offset + (result?.length || 0)) < total ? offset + limit : null,
+            },
+          });
+        });
       });
     } catch (error) {
       console.error('Error fetching projects:', error);

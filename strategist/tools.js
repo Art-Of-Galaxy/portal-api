@@ -9,6 +9,11 @@ const usageService = require('../usage/service');
 const fileService = require('../files/service');
 const notionService = require('../notion/service');
 const s3 = require('../helper/s3_storage');
+const blogEngineService = require('../blog-engine/service');
+const shopifyConnectionsService = require('../shopify-connections/service');
+const wpConnectionsService = require('../wordpress-connections/service');
+const socialConnectionsService = require('../social-connections/service');
+const socialMediaService = require('../social-media/service');
 
 const TOOL_DEFINITIONS = {
   generate_logo_design: {
@@ -81,6 +86,86 @@ const TOOL_DEFINITIONS = {
           maximum: 25,
           description: 'How many files to return (default 10).',
         },
+      },
+    },
+  },
+  list_publishing_targets: {
+    name: 'list_publishing_targets',
+    description:
+      "Returns the client's connected publishing destinations: Shopify stores, WordPress sites, and social media accounts (Instagram, Facebook Pages, YouTube). Call this before offering to generate a blog or social post so you know what the user actually has connected. If a category is empty, tell the user they need to connect one from the Connections page and DO NOT try to publish. Result auto-renders as inline connection cards.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  generate_shopify_blog: {
+    name: 'generate_shopify_blog',
+    description:
+      "Generate a full SEO / GEO / AEO Shopify blog article INLINE in this chat. Returns a saved draft with a link the user can click to review, edit meta / images, and publish. Requires a real brand name + primary keyword. You MUST call list_publishing_targets first if you don't already know which Shopify store to target; if the user has multiple stores, ask them which one before calling this tool. NEVER call with placeholder values.",
+    input_schema: {
+      type: 'object',
+      required: ['brand', 'keyword'],
+      properties: {
+        brand:                { type: 'string', description: 'Brand name that owns the store.' },
+        keyword:              { type: 'string', description: 'Primary keyword the article should rank for.' },
+        shop_connection_id:   { type: 'integer', description: 'The Shopify connection id to publish to. Get from list_publishing_targets.' },
+        intent: {
+          type: 'string',
+          enum: ['informational', 'commercial', 'transactional', 'aeo'],
+          description: 'Search intent shaping the article structure. Default informational.',
+        },
+        length: {
+          type: 'string',
+          enum: ['short', 'standard', 'long', 'auto'],
+          description: 'Article length target. Default standard (1,200-1,600 words).',
+        },
+        angle:                { type: 'string', description: 'Optional angle / notes to steer the piece.' },
+        reference_url:        { type: 'string', description: 'Optional URL the writer should read as a factual + tone reference.' },
+      },
+    },
+  },
+  generate_wordpress_blog: {
+    name: 'generate_wordpress_blog',
+    description:
+      "Generate a full SEO / GEO / AEO WordPress blog article INLINE in this chat. Returns a saved draft with a link the user can click to review, edit meta / images, and publish to their WordPress site. Same rules as generate_shopify_blog: you MUST know the target wp_connection_id (from list_publishing_targets) and you MUST NOT use placeholders. If the user has multiple WP sites, ask them which one first.",
+    input_schema: {
+      type: 'object',
+      required: ['brand', 'keyword'],
+      properties: {
+        brand:              { type: 'string', description: 'Brand or site name.' },
+        keyword:            { type: 'string', description: 'Primary keyword the article should rank for.' },
+        wp_connection_id:   { type: 'integer', description: 'The WordPress connection id to publish to. Get from list_publishing_targets.' },
+        intent: {
+          type: 'string',
+          enum: ['informational', 'commercial', 'transactional', 'aeo'],
+        },
+        length: {
+          type: 'string',
+          enum: ['short', 'standard', 'long', 'auto'],
+        },
+        angle:              { type: 'string', description: 'Optional angle / notes to steer the piece.' },
+        reference_url:      { type: 'string', description: 'Optional URL the writer should read as a factual + tone reference.' },
+      },
+    },
+  },
+  generate_social_post: {
+    name: 'generate_social_post',
+    description:
+      "Generate a social media post (Instagram / Facebook / YouTube) INLINE in this chat. Returns a saved draft with a link the user can click to review, edit caption / hashtags / cover, and publish. Requires the user to have at least one social account connected (check via list_publishing_targets first). If the user has multiple platforms, ask which ones they want the post pushed to.",
+    input_schema: {
+      type: 'object',
+      required: ['brand', 'topic'],
+      properties: {
+        brand:         { type: 'string', description: 'Brand name.' },
+        topic:         { type: 'string', description: 'What the post is about (short phrase or sentence).' },
+        content_type: {
+          type: 'string',
+          enum: ['post', 'carousel', 'reel', 'thumbnail'],
+          description: 'What kind of content. Default post (single image + caption).',
+        },
+        platforms: {
+          type: 'array',
+          items: { type: 'string', enum: ['instagram', 'facebook', 'youtube'] },
+          description: 'Platforms to target. Ask the user if unsure.',
+        },
+        angle:         { type: 'string', description: 'Optional angle / notes.' },
       },
     },
   },
@@ -349,11 +434,325 @@ async function execute_generate_logo_design({ userEmail, input }) {
   }
 }
 
+// ----- Publishing-targets tools (Shopify / WordPress / Social) -----
+
+async function execute_list_publishing_targets({ userEmail }) {
+  if (!userEmail) return { note: 'No user_email available, cannot look up connections.' };
+  const [shops, wpSites, socials] = await Promise.all([
+    shopifyConnectionsService.listConnections({ userEmail }).catch(() => []),
+    wpConnectionsService.listConnections({ userEmail }).catch(() => []),
+    socialConnectionsService.listConnections({ userEmail }).catch(() => []),
+  ]);
+  const shopifyStores = (shops || []).map((s) => ({
+    id: s.id,
+    name: s.shop_name || s.shop_domain,
+    domain: s.shop_domain,
+    is_primary: Boolean(s.is_primary),
+  }));
+  const wordpressSites = (wpSites || []).map((s) => ({
+    id: s.id,
+    name: s.site_name || s.site_url,
+    url: s.site_url,
+    is_primary: Boolean(s.is_primary),
+  }));
+  const socialAccounts = (socials || []).map((s) => ({
+    id: s.id,
+    platform: s.platform,
+    account_name: s.account_name || s.account_handle || s.account_id,
+    account_handle: s.account_handle || null,
+    is_primary: Boolean(s.is_primary),
+  }));
+  return {
+    shopify: shopifyStores,
+    wordpress: wordpressSites,
+    social: socialAccounts,
+    summary: `${shopifyStores.length} Shopify store(s), ${wordpressSites.length} WordPress site(s), ${socialAccounts.length} social account(s).`,
+    _attachment: {
+      type: 'publishing_targets',
+      shopify: shopifyStores,
+      wordpress: wordpressSites,
+      social: socialAccounts,
+    },
+  };
+}
+
+// Shared helpers for the two blog generation tools.
+async function generateBlogArticleFor({
+  service,
+  userEmail,
+  brand,
+  keyword,
+  intent,
+  length,
+  angle,
+  referenceUrl,
+}) {
+  const briefForApi = {
+    brand,
+    keyword,
+    intent: intent || 'informational',
+    voice: {},
+    length: length || 'standard',
+    notes: angle || '',
+    reference_url: referenceUrl || null,
+  };
+  const generated = await blogEngineService.generateArticle({ brief: briefForApi });
+  const spec = generated.spec || {};
+  return { briefForApi, generated, spec };
+}
+
+async function execute_generate_shopify_blog({ userEmail, input }) {
+  if (!userEmail) return { error: 'No user_email available, cannot save the article.' };
+  const brand = String(input?.brand || '').trim();
+  const keyword = String(input?.keyword || '').trim();
+  if (!brand || isPlaceholderBrandName(brand)) {
+    return { error: 'brand looks like a placeholder. Ask the user for the real brand name before calling this tool again.' };
+  }
+  if (!keyword || keyword.length < 3) {
+    return { error: 'keyword is missing or too short. Ask the user for the actual keyword the article should target.' };
+  }
+
+  // Resolve which Shopify connection to associate. Prefer explicit
+  // input, otherwise the user's primary, otherwise the first one.
+  let shopConnectionId = Number.isInteger(input?.shop_connection_id) ? input.shop_connection_id : null;
+  let stores = [];
+  try { stores = await shopifyConnectionsService.listConnections({ userEmail }); } catch { stores = []; }
+  if (!shopConnectionId && stores.length) {
+    shopConnectionId = (stores.find((s) => s.is_primary) || stores[0]).id;
+  }
+  if (!stores.length) {
+    return { error: 'The user has no connected Shopify stores. Ask them to connect one at /new-projects/ai-integrations/shopify-blog/connections first.' };
+  }
+
+  try {
+    const { briefForApi, generated, spec } = await generateBlogArticleFor({
+      userEmail, brand, keyword,
+      intent: input?.intent, length: input?.length, angle: input?.angle,
+      referenceUrl: input?.reference_url,
+    });
+
+    const r = await poll.query(
+      `INSERT INTO tbl_blog_articles
+          (user_email, shop_connection_id, mode, keyword, brief_json, spec_json,
+           assets_json, title, handle, meta_title, meta_description, tags,
+           seo_score, word_count, status)
+        VALUES ($1, $2, 'single', $3, $4::jsonb, $5::jsonb, $6::jsonb,
+                $7, $8, $9, $10, $11, $12, $13, 'draft')
+        RETURNING id`,
+      [
+        userEmail,
+        shopConnectionId,
+        keyword,
+        JSON.stringify(briefForApi),
+        JSON.stringify(spec),
+        JSON.stringify({ featured: generated.featured || null, body_html: generated.body_html || '' }),
+        spec.title || keyword,
+        spec.handle || null,
+        spec.meta_title || null,
+        spec.meta_description || null,
+        Array.isArray(spec.tags) ? spec.tags.join(',') : null,
+        Number.isInteger(spec.seo_score) ? spec.seo_score : null,
+        Number.isInteger(spec.word_count) ? spec.word_count : null,
+      ]
+    );
+    const articleId = r?.rows?.[0]?.id;
+    const shopName = stores.find((s) => s.id === shopConnectionId)?.shop_name || 'your Shopify store';
+    const previewUrl = `/new-projects/ai-integrations/shopify-blog/create?article=${articleId}`;
+    return {
+      ok: true,
+      article_id: articleId,
+      title: spec.title,
+      preview_url: previewUrl,
+      _attachment: {
+        type: 'blog_draft',
+        platform: 'shopify',
+        article_id: articleId,
+        title: spec.title || keyword,
+        meta_description: spec.meta_description || '',
+        featured_url: generated.featured?.url || null,
+        preview_url: previewUrl,
+        target_label: shopName,
+        word_count: spec.word_count || null,
+        seo_score: spec.seo_score || null,
+      },
+      summary: `Drafted a Shopify blog "${spec.title}" for ${shopName}. The user can open it to review, tweak meta / images, and publish.`,
+    };
+  } catch (err) {
+    return { error: err.message || 'Shopify blog generation failed.' };
+  }
+}
+
+async function execute_generate_wordpress_blog({ userEmail, input }) {
+  if (!userEmail) return { error: 'No user_email available, cannot save the article.' };
+  const brand = String(input?.brand || '').trim();
+  const keyword = String(input?.keyword || '').trim();
+  if (!brand || isPlaceholderBrandName(brand)) {
+    return { error: 'brand looks like a placeholder. Ask the user for the real brand name before calling this tool again.' };
+  }
+  if (!keyword || keyword.length < 3) {
+    return { error: 'keyword is missing or too short. Ask the user for the actual keyword the article should target.' };
+  }
+
+  let wpConnectionId = Number.isInteger(input?.wp_connection_id) ? input.wp_connection_id : null;
+  let sites = [];
+  try { sites = await wpConnectionsService.listConnections({ userEmail }); } catch { sites = []; }
+  if (!wpConnectionId && sites.length) {
+    wpConnectionId = (sites.find((s) => s.is_primary) || sites[0]).id;
+  }
+  if (!sites.length) {
+    return { error: 'The user has no connected WordPress sites. Ask them to connect one at /new-projects/ai-integrations/wp-blog/connections first.' };
+  }
+
+  try {
+    const { briefForApi, generated, spec } = await generateBlogArticleFor({
+      userEmail, brand, keyword,
+      intent: input?.intent, length: input?.length, angle: input?.angle,
+      referenceUrl: input?.reference_url,
+    });
+
+    const r = await poll.query(
+      `INSERT INTO tbl_wp_articles
+          (user_email, wp_connection_id, mode, keyword, brief_json, spec_json,
+           assets_json, title, handle, meta_title, meta_description, tags,
+           seo_score, word_count, status)
+        VALUES ($1, $2, 'single', $3, $4::jsonb, $5::jsonb, $6::jsonb,
+                $7, $8, $9, $10, $11, $12, $13, 'draft')
+        RETURNING id`,
+      [
+        userEmail,
+        wpConnectionId,
+        keyword,
+        JSON.stringify(briefForApi),
+        JSON.stringify(spec),
+        JSON.stringify({ featured: generated.featured || null, body_html: generated.body_html || '' }),
+        spec.title || keyword,
+        spec.handle || null,
+        spec.meta_title || null,
+        spec.meta_description || null,
+        Array.isArray(spec.tags) ? spec.tags.join(',') : null,
+        Number.isInteger(spec.seo_score) ? spec.seo_score : null,
+        Number.isInteger(spec.word_count) ? spec.word_count : null,
+      ]
+    );
+    const articleId = r?.rows?.[0]?.id;
+    const siteName = sites.find((s) => s.id === wpConnectionId)?.site_name || 'your WordPress site';
+    const previewUrl = `/new-projects/ai-integrations/wp-blog/create?article=${articleId}`;
+    return {
+      ok: true,
+      article_id: articleId,
+      title: spec.title,
+      preview_url: previewUrl,
+      _attachment: {
+        type: 'blog_draft',
+        platform: 'wordpress',
+        article_id: articleId,
+        title: spec.title || keyword,
+        meta_description: spec.meta_description || '',
+        featured_url: generated.featured?.url || null,
+        preview_url: previewUrl,
+        target_label: siteName,
+        word_count: spec.word_count || null,
+        seo_score: spec.seo_score || null,
+      },
+      summary: `Drafted a WordPress blog "${spec.title}" for ${siteName}. The user can open it to review, tweak meta / images, and publish.`,
+    };
+  } catch (err) {
+    return { error: err.message || 'WordPress blog generation failed.' };
+  }
+}
+
+async function execute_generate_social_post({ userEmail, input }) {
+  if (!userEmail) return { error: 'No user_email available, cannot save the post.' };
+  const brand = String(input?.brand || '').trim();
+  const topic = String(input?.topic || '').trim();
+  if (!brand || isPlaceholderBrandName(brand)) {
+    return { error: 'brand looks like a placeholder. Ask the user for the real brand name before calling this tool again.' };
+  }
+  if (!topic || topic.length < 4) {
+    return { error: 'topic is missing or too short. Ask the user what the post is about first.' };
+  }
+
+  // Resolve which platforms to target. Only include platforms the user
+  // is actually connected to.
+  let accounts = [];
+  try { accounts = await socialConnectionsService.listConnections({ userEmail }); } catch { accounts = []; }
+  if (!accounts.length) {
+    return { error: 'The user has no connected social accounts. Ask them to connect one at /new-projects/social/connections first.' };
+  }
+  const connectedPlatforms = new Set(accounts.map((a) => a.platform));
+  const requested = Array.isArray(input?.platforms) && input.platforms.length
+    ? input.platforms.filter((p) => connectedPlatforms.has(p))
+    : Array.from(connectedPlatforms);
+  if (!requested.length) {
+    return { error: `None of the requested platforms are connected. Connected: ${Array.from(connectedPlatforms).join(', ') || 'none'}.` };
+  }
+
+  const contentType = input?.content_type || 'post';
+  const brief = {
+    brand,
+    content_type: contentType,
+    platforms: requested,
+    topic,
+    angle: input?.angle || '',
+  };
+  try {
+    const generated = await socialMediaService.generateContent({ brief });
+    const spec = generated.spec || {};
+    const cover = generated.cover || null;
+    const platformsStr = requested.join(',');
+    const captionText = spec.caption || '';
+    const hashtagsStr = Array.isArray(spec.hashtags) ? spec.hashtags.join(' ') : (spec.hashtags || '');
+    const assetsJson = cover ? { cover_url: cover.url || cover, cover_content_type: cover.content_type || null } : null;
+
+    const r = await poll.query(
+      `INSERT INTO tbl_social_posts
+          (user_email, project_id, content_type, brief_json, spec_json, assets_json,
+           caption, hashtags, platforms, status)
+        VALUES ($1, NULL, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8, 'draft')
+        RETURNING id`,
+      [
+        userEmail,
+        contentType,
+        JSON.stringify(brief),
+        JSON.stringify(spec),
+        assetsJson ? JSON.stringify(assetsJson) : null,
+        captionText,
+        hashtagsStr,
+        platformsStr,
+      ]
+    );
+    const postId = r?.rows?.[0]?.id;
+    const previewUrl = `/new-projects/social/create?post=${postId}`;
+    return {
+      ok: true,
+      post_id: postId,
+      preview_url: previewUrl,
+      _attachment: {
+        type: 'social_draft',
+        post_id: postId,
+        content_type: contentType,
+        platforms: requested,
+        caption_preview: captionText.slice(0, 220),
+        cover_url: cover?.url || null,
+        preview_url: previewUrl,
+        target_label: requested.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(', '),
+      },
+      summary: `Drafted a ${contentType} for ${requested.join(', ')}. The user can open it to review the caption, cover, and publish.`,
+    };
+  } catch (err) {
+    return { error: err.message || 'Social post generation failed.' };
+  }
+}
+
 const EXECUTORS = {
   generate_logo_design: execute_generate_logo_design,
   get_user_profile: execute_get_user_profile,
   list_user_projects: execute_list_user_projects,
   list_user_files: execute_list_user_files,
+  list_publishing_targets: execute_list_publishing_targets,
+  generate_shopify_blog: execute_generate_shopify_blog,
+  generate_wordpress_blog: execute_generate_wordpress_blog,
+  generate_social_post: execute_generate_social_post,
 };
 
 function definitionsForDomain(domain) {
