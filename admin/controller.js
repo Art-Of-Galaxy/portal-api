@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const adminService = require('./service');
+const pagination = require('../helper/pagination');
 
 const jwtSecret = process.env.JWT_SECRET || process.env.SECRET_KEY || 'default_secret';
 
@@ -69,8 +70,17 @@ async function stats(_req, res) {
 
 async function listUsers(req, res) {
   try {
-    const users = await adminService.listUsers({ search: safeString(req.query?.search) });
-    return res.status(200).json({ success: true, users });
+    const { limit, offset } = pagination.parse(req, { defaultLimit: 10 });
+    const { items, total } = await adminService.listUsers({
+      search: safeString(req.query?.search),
+      limit,
+      offset,
+    });
+    return res.status(200).json({
+      success: true,
+      users: items,
+      pagination: pagination.envelope({ total, limit, offset }),
+    });
   } catch (err) {
     console.error('admin/listUsers error:', err);
     return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
@@ -123,14 +133,21 @@ async function setUserActive(req, res) {
 
 async function listProjects(req, res) {
   try {
-    const projects = await adminService.listProjects({
+    const { limit, offset } = pagination.parse(req, { defaultLimit: 10 });
+    const { items, total } = await adminService.listProjects({
       search: safeString(req.query?.search),
       category: safeString(req.query?.category),
       serviceType: safeString(req.query?.service_type),
       userEmail: safeString(req.query?.user_email),
       status: safeInt(req.query?.status),
+      limit,
+      offset,
     });
-    return res.status(200).json({ success: true, projects });
+    return res.status(200).json({
+      success: true,
+      projects: items,
+      pagination: pagination.envelope({ total, limit, offset }),
+    });
   } catch (err) {
     console.error('admin/listProjects error:', err);
     return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
@@ -184,14 +201,21 @@ async function deleteProject(req, res) {
 
 async function listFiles(req, res) {
   try {
-    const files = await adminService.listFiles({
+    const { limit, offset } = pagination.parse(req, { defaultLimit: 10 });
+    const { items, total } = await adminService.listFiles({
       search: safeString(req.query?.search),
       category: safeString(req.query?.category),
       serviceType: safeString(req.query?.service_type),
       source: safeString(req.query?.source),
       userEmail: safeString(req.query?.user_email),
+      limit,
+      offset,
     });
-    return res.status(200).json({ success: true, files });
+    return res.status(200).json({
+      success: true,
+      files: items,
+      pagination: pagination.envelope({ total, limit, offset }),
+    });
   } catch (err) {
     console.error('admin/listFiles error:', err);
     return res.status(500).json({ success: false, message: err.message || 'Internal server error' });

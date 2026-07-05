@@ -122,12 +122,12 @@ exports.getStats = async () => {
 
 // ----- Users -----
 
-exports.listUsers = async ({ search = '' } = {}) => {
+exports.listUsers = async ({ search = '', limit = null, offset = 0 } = {}) => {
   const db = await db_helper.get_db_connection();
   const trimmed = String(search || '').trim();
   const pattern = trimmed ? `%${trimmed.toLowerCase()}%` : null;
 
-  const sql = `
+  const listSql = `
     SELECT
       u.id, u.name, u.email, u.phone, u.profile_photo_url,
       u.is_admin, u.active, u.created_at, u.updated_at, u.admin_last_login_at,
@@ -139,8 +139,20 @@ exports.listUsers = async ({ search = '' } = {}) => {
     FROM users u
     WHERE (?::text IS NULL OR LOWER(u.email) LIKE ? OR LOWER(u.name) LIKE ?)
     ORDER BY u.id DESC
+    ${limit == null ? '' : 'LIMIT ? OFFSET ?'}
   `;
-  return asRows(await db.query(sql, [pattern, pattern, pattern]));
+  const listParams = limit == null
+    ? [pattern, pattern, pattern]
+    : [pattern, pattern, pattern, Number(limit), Number(offset) || 0];
+  const items = asRows(await db.query(listSql, listParams));
+  if (limit == null) return { items, total: items.length };
+  const countSql = `
+    SELECT COUNT(*)::int AS c
+      FROM users u
+     WHERE (?::text IS NULL OR LOWER(u.email) LIKE ? OR LOWER(u.name) LIKE ?)
+  `;
+  const totalRow = firstRow(await db.query(countSql, [pattern, pattern, pattern]));
+  return { items, total: Number(totalRow?.c || 0) };
 };
 
 exports.getUserById = async (id) => {
@@ -214,11 +226,26 @@ exports.listProjects = async ({
   serviceType = null,
   userEmail = null,
   status = null,
+  limit = null,
+  offset = 0,
 } = {}) => {
   const db = await db_helper.get_db_connection();
   const trimmed = String(search || '').trim();
   const pattern = trimmed ? `%${trimmed.toLowerCase()}%` : null;
-  const sql = `
+  const filterParams = [
+    category, category,
+    serviceType, serviceType,
+    userEmail, userEmail,
+    status === null ? null : Number(status), status === null ? null : Number(status),
+    pattern, pattern, pattern,
+  ];
+  const where = `p.is_delete = 0
+      AND (?::text IS NULL OR LOWER(p.category) = LOWER(?))
+      AND (?::text IS NULL OR LOWER(p.service_type) = LOWER(?))
+      AND (?::text IS NULL OR LOWER(p.user_email) = LOWER(?))
+      AND (?::int  IS NULL OR p.status = ?)
+      AND (?::text IS NULL OR LOWER(p.project_name) LIKE ? OR LOWER(p.user_email) LIKE ?)`;
+  const listSql = `
     SELECT
       p.id, p.project_name, p.category, p.service_type, p.user_email,
       p.status,
@@ -229,23 +256,16 @@ exports.listProjects = async ({
       u.name AS user_name
     FROM tbl_projects p
     LEFT JOIN users u ON LOWER(u.email) = LOWER(p.user_email)
-    WHERE p.is_delete = 0
-      AND (?::text IS NULL OR LOWER(p.category) = LOWER(?))
-      AND (?::text IS NULL OR LOWER(p.service_type) = LOWER(?))
-      AND (?::text IS NULL OR LOWER(p.user_email) = LOWER(?))
-      AND (?::int  IS NULL OR p.status = ?)
-      AND (?::text IS NULL OR LOWER(p.project_name) LIKE ? OR LOWER(p.user_email) LIKE ?)
+    WHERE ${where}
     ORDER BY p.id DESC
+    ${limit == null ? '' : 'LIMIT ? OFFSET ?'}
   `;
-  return asRows(
-    await db.query(sql, [
-      category, category,
-      serviceType, serviceType,
-      userEmail, userEmail,
-      status === null ? null : Number(status), status === null ? null : Number(status),
-      pattern, pattern, pattern,
-    ])
-  );
+  const listParams = limit == null ? filterParams : [...filterParams, Number(limit), Number(offset) || 0];
+  const items = asRows(await db.query(listSql, listParams));
+  if (limit == null) return { items, total: items.length };
+  const countSql = `SELECT COUNT(*)::int AS c FROM tbl_projects p WHERE ${where}`;
+  const totalRow = firstRow(await db.query(countSql, filterParams));
+  return { items, total: Number(totalRow?.c || 0) };
 };
 
 exports.getProjectById = async (id) => {
@@ -315,34 +335,42 @@ exports.listFiles = async ({
   serviceType = null,
   source = null,
   userEmail = null,
+  limit = null,
+  offset = 0,
 } = {}) => {
   const db = await db_helper.get_db_connection();
   const trimmed = String(search || '').trim();
   const pattern = trimmed ? `%${trimmed.toLowerCase()}%` : null;
-  const sql = `
+  const filterParams = [
+    category, category,
+    serviceType, serviceType,
+    source, source,
+    userEmail, userEmail,
+    pattern, pattern,
+  ];
+  const where = `f.is_delete = 0
+      AND (?::text IS NULL OR LOWER(f.category) = LOWER(?))
+      AND (?::text IS NULL OR LOWER(f.service_type) = LOWER(?))
+      AND (?::text IS NULL OR LOWER(f.source) = LOWER(?))
+      AND (?::text IS NULL OR LOWER(f.user_email) = LOWER(?))
+      AND (?::text IS NULL OR LOWER(f.file_name) LIKE ?)`;
+  const listSql = `
     SELECT
       f.id, f.file_name, f.url, f.category, f.service_type, f.source,
       f.mime_type, f.size_bytes, f.project_id, f.user_email, f.created_at,
       u.name AS user_name
     FROM tbl_files f
     LEFT JOIN users u ON LOWER(u.email) = LOWER(f.user_email)
-    WHERE f.is_delete = 0
-      AND (?::text IS NULL OR LOWER(f.category) = LOWER(?))
-      AND (?::text IS NULL OR LOWER(f.service_type) = LOWER(?))
-      AND (?::text IS NULL OR LOWER(f.source) = LOWER(?))
-      AND (?::text IS NULL OR LOWER(f.user_email) = LOWER(?))
-      AND (?::text IS NULL OR LOWER(f.file_name) LIKE ?)
+    WHERE ${where}
     ORDER BY f.id DESC
+    ${limit == null ? '' : 'LIMIT ? OFFSET ?'}
   `;
-  return asRows(
-    await db.query(sql, [
-      category, category,
-      serviceType, serviceType,
-      source, source,
-      userEmail, userEmail,
-      pattern, pattern,
-    ])
-  );
+  const listParams = limit == null ? filterParams : [...filterParams, Number(limit), Number(offset) || 0];
+  const items = asRows(await db.query(listSql, listParams));
+  if (limit == null) return { items, total: items.length };
+  const countSql = `SELECT COUNT(*)::int AS c FROM tbl_files f WHERE ${where}`;
+  const totalRow = firstRow(await db.query(countSql, filterParams));
+  return { items, total: Number(totalRow?.c || 0) };
 };
 
 exports.deleteFile = async (id) => {

@@ -9,6 +9,7 @@
 //   POST  /api/social-media/run-scheduler -> manual tick (admin only)
 
 const { poll } = require('../config/dbconfig');
+const pagination = require('../helper/pagination');
 const service = require('./service');
 const publisher = require('./publish');
 const scheduler = require('./scheduler');
@@ -214,6 +215,7 @@ async function library(req, res) {
       params.push(filter);
       where.push(`p.status = $${params.length}`);
     }
+    const { limit, offset } = pagination.parse(req);
 
     // Error filtering: errors from a publish attempt that has since
     // been superseded by a successful run are stale. The cutoff is the
@@ -255,9 +257,27 @@ async function library(req, res) {
          LEFT JOIN last_success ls ON ls.post_id = p.id
         WHERE ${where.join(' AND ')}
         ORDER BY COALESCE(p.scheduled_for, p.published_at, p.updated_at) DESC
-        LIMIT 60`,
-      params
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
     );
+
+    // Total for current filter + per-status counts for tab badges.
+    const [totalRow, countsRow] = await Promise.all([
+      poll.query(
+        `SELECT COUNT(*)::int AS c FROM tbl_social_posts p WHERE ${where.join(' AND ')}`,
+        params
+      ),
+      poll.query(
+        `SELECT
+           COUNT(*)::int                                                  AS all_c,
+           SUM(CASE WHEN status = 'scheduled' THEN 1 ELSE 0 END)::int     AS scheduled_c,
+           SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END)::int     AS published_c,
+           SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END)::int         AS draft_c,
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)::int        AS failed_c
+         FROM tbl_social_posts WHERE user_email = $1`,
+        [userEmail]
+      ),
+    ]);
 
     const posts = (rows || []).map((r) => {
       const success = Number(r.run_success_count || 0);
@@ -289,7 +309,20 @@ async function library(req, res) {
       };
     });
 
-    return res.status(200).json({ success: true, posts });
+    const total = Number(totalRow?.[0]?.c || 0);
+    const cRow = countsRow?.[0] || {};
+    return res.status(200).json({
+      success: true,
+      posts,
+      pagination: pagination.envelope({ total, limit, offset }),
+      counts: {
+        all:       Number(cRow.all_c || 0),
+        scheduled: Number(cRow.scheduled_c || 0),
+        published: Number(cRow.published_c || 0),
+        draft:     Number(cRow.draft_c || 0),
+        failed:    Number(cRow.failed_c || 0),
+      },
+    });
   } catch (err) {
     console.error('social-media/library error:', err);
     return res.status(500).json({ success: false, message: err.message || 'Library load failed' });

@@ -1,4 +1,5 @@
 const service = require('./service');
+const pagination = require('../helper/pagination');
 
 function userEmailFrom(req) {
   return (
@@ -48,11 +49,18 @@ async function getSession(req, res) {
 
 async function listSessions(req, res) {
   try {
-    const sessions = await service.listSessions({
+    const { limit, offset } = pagination.parse(req);
+    const { items, total } = await service.listSessions({
       userEmail: userEmailFrom(req),
       service: req.query?.service || null,
+      limit,
+      offset,
     });
-    return res.status(200).json({ success: true, sessions });
+    return res.status(200).json({
+      success: true,
+      sessions: items,
+      pagination: pagination.envelope({ total, limit, offset }),
+    });
   } catch (err) {
     console.error('strategist/list error:', err);
     return res.status(500).json({ success: false, message: err.message || 'Internal server error' });

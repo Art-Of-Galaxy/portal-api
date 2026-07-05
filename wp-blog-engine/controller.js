@@ -9,6 +9,7 @@
 // publish time.
 
 const { poll } = require('../config/dbconfig');
+const pagination = require('../helper/pagination');
 const blogService = require('../blog-engine/service');
 const publisher = require('./publisher');
 const autopilot = require('./autopilot');
@@ -234,22 +235,40 @@ async function library(req, res) {
     const userEmail = getUserEmail(req);
     if (!userEmail) return res.status(400).json({ success: false, message: 'user_email is required' });
     const filter = String(req.query.filter || 'all').toLowerCase();
+    const { limit, offset } = pagination.parse(req);
     const where = ['user_email = $1'];
     const params = [userEmail];
     if (['draft', 'scheduled', 'published', 'failed'].includes(filter)) {
       params.push(filter);
       where.push(`status = $${params.length}`);
     }
-    const rows = await poll.query(
-      `SELECT id, wp_connection_id, mode, keyword, title, handle, tags,
-              seo_score, word_count, status, scheduled_for, published_at,
-              wp_post_url, assets_json, created_at, updated_at
+    const listParams = [...params, limit, offset];
+    const [rows, totalRow, countsRow] = await Promise.all([
+      poll.query(
+        `SELECT id, wp_connection_id, mode, keyword, title, handle, tags,
+                seo_score, word_count, status, scheduled_for, published_at,
+                wp_post_url, assets_json, created_at, updated_at
+           FROM tbl_wp_articles
+          WHERE ${where.join(' AND ')}
+          ORDER BY COALESCE(scheduled_for, published_at, updated_at) DESC
+          LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
+        listParams
+      ),
+      poll.query(
+        `SELECT COUNT(*)::int AS c FROM tbl_wp_articles WHERE ${where.join(' AND ')}`,
+        params
+      ),
+      poll.query(
+        `SELECT
+           COUNT(*)::int                                                             AS all_c,
+           SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END)::int                AS published_c,
+           SUM(CASE WHEN status IN ('scheduled','publishing') THEN 1 ELSE 0 END)::int AS scheduled_c,
+           SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END)::int                    AS draft_c
          FROM tbl_wp_articles
-        WHERE ${where.join(' AND ')}
-        ORDER BY COALESCE(scheduled_for, published_at, updated_at) DESC
-        LIMIT 80`,
-      params
-    );
+         WHERE user_email = $1`,
+        [userEmail]
+      ),
+    ]);
     const articles = (rows || []).map((r) => ({
       id: r.id,
       wp_connection_id: r.wp_connection_id,
@@ -268,7 +287,19 @@ async function library(req, res) {
       created_at: r.created_at,
       updated_at: r.updated_at,
     }));
-    return res.status(200).json({ success: true, articles });
+    const total = Number(totalRow?.[0]?.c || 0);
+    const cRow = countsRow?.[0] || {};
+    return res.status(200).json({
+      success: true,
+      articles,
+      pagination: pagination.envelope({ total, limit, offset }),
+      counts: {
+        all:       Number(cRow.all_c || 0),
+        published: Number(cRow.published_c || 0),
+        scheduled: Number(cRow.scheduled_c || 0),
+        draft:     Number(cRow.draft_c || 0),
+      },
+    });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message || 'Library load failed' });
   }

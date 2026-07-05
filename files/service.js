@@ -64,21 +64,29 @@ exports.recordManyFiles = async (files = []) => {
   return out;
 };
 
-exports.listFilesForUser = async ({ userEmail }) => {
-  if (!userEmail) return [];
+exports.listFilesForUser = async ({ userEmail, limit = null, offset = 0 }) => {
+  if (!userEmail) return { items: [], total: 0 };
   const db = await db_helper.get_db_connection();
-  const sql = `
+  const listSql = `
     SELECT id, project_id, project_name, file_name, url, user_email, category,
            service_type, source, mime_type, size_bytes, created_at
     FROM tbl_files
     WHERE is_delete = 0
       AND (user_email IS NULL OR user_email = ?)
     ORDER BY created_at DESC, id DESC
+    ${limit == null ? '' : 'LIMIT ? OFFSET ?'}
   `;
-  const rows = await db.query(sql, [userEmail]);
-  if (!rows) return [];
-  if (Array.isArray(rows)) return rows;
-  return Array.isArray(rows.rows) ? rows.rows : [];
+  const listParams = limit == null ? [userEmail] : [userEmail, Number(limit), Number(offset) || 0];
+  const rows = await db.query(listSql, listParams);
+  const items = Array.isArray(rows) ? rows : (Array.isArray(rows?.rows) ? rows.rows : []);
+  if (limit == null) return { items, total: items.length };
+  const countSql = `
+    SELECT COUNT(*)::int AS c FROM tbl_files
+     WHERE is_delete = 0 AND (user_email IS NULL OR user_email = ?)
+  `;
+  const countRes = await db.query(countSql, [userEmail]);
+  const countRow = Array.isArray(countRes) ? countRes[0] : countRes?.rows?.[0];
+  return { items, total: Number(countRow?.c || 0) };
 };
 
 exports.softDeleteFile = async ({ id, userEmail }) => {

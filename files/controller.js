@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const fileService = require('./service');
 const s3 = require('../helper/s3_storage');
+const pagination = require('../helper/pagination');
 
 const UPLOADS_PUBLIC_PATH = '/uploads';
 
@@ -119,8 +120,13 @@ async function list(req, res) {
       return res.status(400).json({ success: false, message: 'Missing user email.' });
     }
 
-    const files = await fileService.listFilesForUser({ userEmail });
-    return res.status(200).json({ success: true, files });
+    const { limit, offset } = pagination.parse(req);
+    const { items, total } = await fileService.listFilesForUser({ userEmail, limit, offset });
+    return res.status(200).json({
+      success: true,
+      files: items,
+      pagination: pagination.envelope({ total, limit, offset }),
+    });
   } catch (err) {
     console.error('files/list error:', err);
     return res.status(500).json({

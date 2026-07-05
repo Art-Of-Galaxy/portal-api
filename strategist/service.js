@@ -282,7 +282,7 @@ async function loadSession(id) {
   return session;
 }
 
-async function listSessions({ userEmail, service }) {
+async function listSessions({ userEmail, service, limit = null, offset = 0 }) {
   const params = [];
   const where = ['state <> $1'];
   params.push('deleted');
@@ -294,18 +294,23 @@ async function listSessions({ userEmail, service }) {
     params.push(service);
     where.push(`service = $${params.length}`);
   }
-  const sql = `
+  const listParams = limit == null ? params : [...params, Number(limit), Number(offset) || 0];
+  const listSql = `
     SELECT id, service, title, brief, ready_to_generate, state, project_id, updated_at
       FROM tbl_strategist_sessions
       WHERE ${where.join(' AND ')}
       ORDER BY updated_at DESC
-      LIMIT 50`;
-  // SELECT returns raw rows array via the poll wrapper.
-  const rows = await poll.query(sql, params);
-  return (rows || []).map((r) => ({
+      ${limit == null ? '' : `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`}`;
+  const rows = await poll.query(listSql, listParams);
+  const items = (rows || []).map((r) => ({
     ...r,
     updated_at: asUtcIso(r.updated_at),
   }));
+  if (limit == null) return { items, total: items.length };
+  const countSql = `SELECT COUNT(*)::int AS c FROM tbl_strategist_sessions WHERE ${where.join(' AND ')}`;
+  const countRows = await poll.query(countSql, params);
+  const total = Number((countRows || [])[0]?.c || 0);
+  return { items, total };
 }
 
 async function appendMessage({ sessionId, role, content, suggestions, attachments }) {
