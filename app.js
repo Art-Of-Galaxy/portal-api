@@ -53,6 +53,13 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Database-Id', 'X-User-Email']
 }));
 
+// Shopify webhooks MUST be mounted before express.json(). HMAC
+// verification hashes the raw request bytes, and once express.json() has
+// parsed the body those bytes are gone: re-serializing req.body produces
+// a different digest and every signature check fails. The router applies
+// its own express.raw(). See shopify-connections/webhooks.js.
+app.use('/api/shopify/webhooks', require('./shopify-connections/webhooks_router'));
+
 // Middleware to parse incoming requests
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));

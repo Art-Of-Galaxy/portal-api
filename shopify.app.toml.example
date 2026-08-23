@@ -1,0 +1,74 @@
+# Shopify app configuration, for reference.
+#
+# The Partner Dashboard no longer has fields for the mandatory compliance
+# webhooks. App config is now code: it lives in shopify.app.toml and is
+# pushed with `shopify app deploy`.
+# https://shopify.dev/docs/apps/build/compliance/privacy-law-compliance
+#
+# DO NOT copy this file to shopify.app.toml by hand. The real file must
+# carry the client_id and current settings of the existing app, so:
+#
+#   npm i -g @shopify/cli@latest
+#   cd portal-api
+#   shopify app config link      # pick the existing app, writes shopify.app.toml
+#   # merge the [webhooks] block below into the generated file
+#   shopify app deploy           # pushes config to ALL installs
+#
+# Everything below reflects what the app is already configured with, so
+# use it to sanity check the generated file before deploying. Deploying a
+# file with the wrong application_url, scopes, or redirect_urls will
+# overwrite the live values and break OAuth.
+
+client_id = "<SHOPIFY_API_KEY>"          # same value as the SHOPIFY_API_KEY env var
+name = "<app name as it appears in the Partner Dashboard>"
+handle = "<app handle, filled in by `shopify app config link`>"
+
+# The portal page merchants land on. NOT the API host.
+application_url = "https://portal.artofgalaxy.com/new-projects/ai-integrations/shopify-blog"
+
+# This app is a standalone portal flow, not an embedded admin app.
+# The CLI templates default this to true; leaving it true would break the
+# current redirect-based install.
+embedded = false
+
+[access_scopes]
+# Must match SCOPES in shopify-connections/oauth.js
+scopes = "write_content,read_content,write_files,read_files"
+
+[auth]
+# Must match the SHOPIFY_OAUTH_REDIRECT_URI env var
+redirect_urls = [ "https://api.artofgalaxy.com/api/shopify-connections/callback" ]
+
+[webhooks]
+# Keep in step with the SHOPIFY_API_VERSION env var (admin_api.js).
+api_version = "2024-10"
+
+# Absolute URLs are required here. A relative uri like "/webhooks/..."
+# resolves against application_url, which is the portal frontend; the
+# webhook handlers live on the API host.
+
+# --- mandatory compliance topics (public apps only) ---
+# Handled by: shopify-connections/webhooks.js
+[[webhooks.subscriptions]]
+uri = "https://api.artofgalaxy.com/api/shopify/webhooks/customers/data_request"
+compliance_topics = [ "customers/data_request" ]
+
+[[webhooks.subscriptions]]
+uri = "https://api.artofgalaxy.com/api/shopify/webhooks/customers/redact"
+compliance_topics = [ "customers/redact" ]
+
+[[webhooks.subscriptions]]
+uri = "https://api.artofgalaxy.com/api/shopify/webhooks/shop/redact"
+compliance_topics = [ "shop/redact" ]
+
+# --- app lifecycle ---
+# Declared here rather than registered per shop after OAuth, so it also
+# applies to stores that installed before this was added.
+[[webhooks.subscriptions]]
+uri = "https://api.artofgalaxy.com/api/shopify/webhooks/app/uninstalled"
+topics = [ "app/uninstalled" ]
+
+[build]
+# Required for `shopify app deploy` to push the config above, not just
+# extensions.
+include_config_on_deploy = true

@@ -129,6 +129,88 @@ async function markValidated(id) {
   );
 }
 
+// ---------------------------------------------------------------------
+// Webhook-driven lifecycle. See webhooks.js.
+// ---------------------------------------------------------------------
+
+// shop/redact: erase everything tied to a store, 48h after uninstall.
+//
+// Deleting the connection row is what removes the store-identifying
+// data (domain, name, shop id, encrypted admin token, contact email in
+// meta). tbl_blog_autopilots cascades on that delete; tbl_blog_articles
+// only ON DELETE SET NULL, so we scrub its Shopify columns first, while
+// we still know which articles belonged to the store. The merchant's own
+// drafted copy stays in their portal account: it is their content, not
+// the store's, and it no longer references the shop.
+async function redactShop({ shopDomain }) {
+  if (!shopDomain) throw Object.assign(new Error('shop_domain is required'), { status: 400 });
+
+  const conns = await poll.query(
+    `SELECT id FROM tbl_shopify_connections WHERE shop_domain = $1`,
+    [shopDomain]
+  );
+  const ids = (conns || []).map((r) => r.id);
+  if (!ids.length) {
+    return { connections_deleted: 0, autopilots_deleted: 0, articles_scrubbed: 0 };
+  }
+
+  const articles = await poll.query(
+    `UPDATE tbl_blog_articles
+        SET shopify_article_id = NULL,
+            shopify_blog_id    = NULL,
+            shopify_url        = NULL,
+            shop_connection_id = NULL,
+            status = CASE WHEN status IN ('scheduled', 'publishing') THEN 'draft' ELSE status END,
+            updated_at = NOW()
+      WHERE shop_connection_id = ANY($1::int[])`,
+    [ids]
+  );
+
+  const autopilots = await poll.query(
+    `DELETE FROM tbl_blog_autopilots WHERE shop_connection_id = ANY($1::int[])`,
+    [ids]
+  );
+
+  const deleted = await poll.query(
+    `DELETE FROM tbl_shopify_connections WHERE id = ANY($1::int[])`,
+    [ids]
+  );
+
+  return {
+    connections_deleted: deleted?.rowCount || 0,
+    autopilots_deleted: autopilots?.rowCount || 0,
+    articles_scrubbed: articles?.rowCount || 0,
+  };
+}
+
+// app/uninstalled: the access token is dead the moment the store removes
+// the app. Flip the connection to 'revoked' and blank the token so
+// getConnectionWithToken (which filters state='connected') stops handing
+// it to the publisher, and pause the autopilots so the hourly refill
+// stops drafting for a store we can no longer publish to.
+async function markUninstalled({ shopDomain }) {
+  if (!shopDomain) throw Object.assign(new Error('shop_domain is required'), { status: 400 });
+
+  const updated = await poll.query(
+    `UPDATE tbl_shopify_connections
+        SET state = 'revoked', access_token_enc = '', updated_at = NOW()
+      WHERE shop_domain = $1 AND state <> 'revoked'
+      RETURNING id`,
+    [shopDomain]
+  );
+  const ids = (updated?.rows || []).map((r) => r.id);
+  if (!ids.length) return { connections_revoked: 0, autopilots_paused: 0 };
+
+  const paused = await poll.query(
+    `UPDATE tbl_blog_autopilots
+        SET status = 'paused', updated_at = NOW()
+      WHERE shop_connection_id = ANY($1::int[]) AND status = 'active'`,
+    [ids]
+  );
+
+  return { connections_revoked: ids.length, autopilots_paused: paused?.rowCount || 0 };
+}
+
 module.exports = {
   upsertConnection,
   listConnections,
@@ -137,4 +219,6 @@ module.exports = {
   disconnect,
   markReauthRequired,
   markValidated,
+  redactShop,
+  markUninstalled,
 };
