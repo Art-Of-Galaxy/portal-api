@@ -28,11 +28,12 @@ const ALLOWED_PLATFORMS = new Set(['instagram', 'facebook', 'youtube']);
 // Style rules we want every Claude response to follow. Kept short and
 // stable so the prompt cache stays warm across requests.
 const STYLE_RULES = `Style rules you MUST follow in every reply:
-- Be specific and actionable, never generic.
+- Be specific and actionable, never generic. Every line should feel written by a senior brand social editor, not a content mill.
 - NEVER use em dashes (—) or double-dashes (--). They read as AI-generated. Use a period, comma, colon, parentheses, "and" or "or" instead.
-- Write captions in the brand's voice and tone, calibrated to the goal (awareness, engagement, sales, authority).
+- Captions: open with a scroll-stopping first line (the "hook") that works even when Instagram truncates after ~125 characters. Then short punchy paragraphs, line breaks between thoughts, one clear CTA at the end. Write in the brand's voice, calibrated to the goal (awareness, engagement, sales, authority). No corporate filler, no "In today's fast-paced world".
 - Hashtags: 5 to 8 short, relevant tags. Mix one or two brand tags with 3 to 5 niche tags. No spammy hashtag clouds.
-- Image prompts must include the visual subject, composition, palette, and any on-image text overlay verbatim. Mention nothing about Instagram, Facebook, or AOG.`;
+- IMAGE PROMPT QUALITY BAR (critical): every image prompt must describe a finished, premium social graphic, not a stock photo. Include ALL of: (1) the exact on-image text rendered verbatim and its typographic treatment (weight, scale, placement), (2) the composition and layout grid, (3) the color palette with specific hues, (4) the subject or visual metaphor, (5) lighting and texture cues (soft studio light, grain, gradient mesh, editorial flat-lay, etc). Aim for the look of a top-tier DTC brand feed: confident typography, generous negative space, consistent palette. Mention nothing about Instagram, Facebook, or AOG.
+- When reference images are provided in the brief, mirror their palette, mood, and product presentation. The user gave them as ground truth for how the brand should look.`;
 
 // ---------- Per-type system prompts + JSON schemas ----------
 
@@ -48,18 +49,22 @@ const CAROUSEL_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['tag', 'headline', 'body'],
+        required: ['tag', 'headline', 'body', 'image_prompt'],
         properties: {
           tag:      { type: 'string', description: '2 to 4 word slide eyebrow.' },
           headline: { type: 'string', description: '3 to 7 word slide headline.' },
           body:     { type: 'string', description: '1 to 2 sentence body copy, under 180 chars.' },
+          image_prompt: {
+            type: 'string',
+            description: 'fal.ai prompt for THIS slide’s full design, 4:5 portrait. Must include: the slide headline text rendered verbatim as the dominant typographic element, the body copy as smaller supporting text, the shared visual system (same palette, same font feel, same layout grid as the cover), plus the slide-specific subject or metaphor. These render as finished social graphics, not photos with text slapped on.',
+          },
         },
       },
-      description: 'EXACTLY the requested slide count, in narrative order.',
+      description: 'EXACTLY the requested slide count, in narrative order. Slide 1 in this array is the SECOND card the viewer sees (the cover_prompt image is the first).',
     },
-    caption:      { type: 'string', description: 'Caption for the post, 2 to 5 short paragraphs, friendly + on-voice.' },
+    caption:      { type: 'string', description: 'Caption for the post, 2 to 5 short paragraphs, friendly + on-voice. Open with a hook line that mirrors the cover headline.' },
     hashtags:     { type: 'array', items: { type: 'string' }, description: '5 to 8 hashtags with the # prefix.' },
-    cover_prompt: { type: 'string', description: 'fal.ai prompt for the carousel cover image. Square 4:5. Mention the on-image headline verbatim.' },
+    cover_prompt: { type: 'string', description: 'fal.ai prompt for the carousel COVER image (card 1 of the carousel). 4:5 portrait. Mention the on-image headline verbatim, make it the hero element. Must establish the visual system (palette, typography feel, layout) every slide prompt then repeats.' },
     palette:      { type: 'string', description: 'CSS gradient string for the slide backgrounds, e.g. "linear-gradient(150deg,#0f766e,#134e4a)".' },
   },
 };
@@ -163,14 +168,19 @@ const SCHEMAS = {
 };
 
 function systemPromptFor(type) {
-  return `You are the AOG Social Media Agent at Art of Galaxy. You write on-brand social content for Instagram, Facebook, and YouTube Shorts.
+  return `You are the AOG Social Media Agent at Art of Galaxy, an Instagram-first content studio. You produce publish-ready, premium Instagram content that looks like it came from a top-tier DTC brand's in-house design team.
 
-You take a structured brief (brand, topic, goal, tone, content type, platforms, target slide count or duration) and produce a publish-ready ${type} spec.
+You take a structured brief (brand, topic, goal, tone, content type, target slide count) and produce a publish-ready ${type} spec.
 
 ${STYLE_RULES}
 
+CAROUSEL VISUAL SYSTEM (when type is carousel):
+- The cover and every slide must share ONE visual system: same palette, same typographic voice, same layout grid. A viewer swiping through should feel like they're reading one designed document, not a random image dump.
+- The cover is the thumbnail that earns the tap: dominant headline, high contrast, minimal clutter.
+- Each slide advances the narrative: eyebrow tag, one headline idea, short supporting body. The final slide should carry the CTA.
+
 You will be given:
-1. A JSON brief.
+1. A JSON brief. It may include reference_images the user uploaded; treat their look as the brand's ground truth.
 2. A JSON output schema you must conform to.
 
 Respond ONLY with the JSON output, no prose.`;
@@ -228,6 +238,7 @@ function uploadedReferenceUrls(brief) {
   const urls = []
     .concat(Array.isArray(brief?.product_uploads) ? brief.product_uploads : [])
     .concat(Array.isArray(brief?.brand_assets) ? brief.brand_assets : [])
+    .concat(Array.isArray(brief?.reference_images) ? brief.reference_images : [])
     .map((a) => (typeof a === 'string' ? a : a?.url))
     .filter((u) => typeof u === 'string' && /^https?:\/\//i.test(u));
   return [...new Set(urls)].slice(0, 3);
@@ -283,6 +294,59 @@ async function generateCoverImage({ type, prompt, brandSlug, brief }) {
   }
 }
 
+// Generate one image per carousel slide in parallel (bounded). Each
+// slide's image_prompt comes from the spec. Failures are per-slide
+// soft: a slide without an image renders as a text-on-gradient card in
+// the preview and is skipped at publish time. Returns an array aligned
+// with spec.slides: [{ url, content_type } | null, ...].
+async function generateSlideImages({ slides, brandSlug, brief }) {
+  if (!Array.isArray(slides) || !slides.length) return [];
+  const aspect = ASPECT_BY_TYPE.carousel;
+  const refs = uploadedReferenceUrls(brief);
+  const extras = withReferenceImages({ ...aspect, output_format: 'png' }, IMAGE_MODEL, refs);
+  const out = new Array(slides.length).fill(null);
+  const CONCURRENCY = 3;
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const my = next; next += 1;
+      if (my >= slides.length) return;
+      const prompt = slides[my]?.image_prompt;
+      if (!prompt) continue;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await imageGeneration.generateImages({
+          prompt,
+          model: IMAGE_MODEL,
+          num_images: 1,
+          image_size: aspect.image_size,
+          extra_input: extras,
+        });
+        const img = (r.images || [])[0];
+        if (!img?.url) continue;
+        if (s3.isConfigured()) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const uploaded = await s3.uploadFromUrl(img.url, {
+              prefix: `generated/social-media/${brandSlug}/carousel`,
+              originalName: `${brandSlug}-slide-${my + 2}.png`,
+            });
+            out[my] = { url: uploaded.url, content_type: uploaded.contentType || 'image/png' };
+            continue;
+          } catch (mirrorErr) {
+            console.error('[social-media] slide mirror failed:', mirrorErr.message || mirrorErr);
+          }
+        }
+        out[my] = { url: img.url, content_type: img.content_type || 'image/png' };
+      } catch (err) {
+        console.error(`[social-media] slide ${my + 1} image failed (continuing):`, err.message || err);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, slides.length) }, () => worker()));
+  return out;
+}
+
 // ---------- Main entry ----------
 
 async function generateContent({ brief, requestedModel }) {
@@ -327,6 +391,19 @@ async function generateContent({ brief, requestedModel }) {
     }
   }
 
+  // Carousels: one designed image per slide, generated at brief time so
+  // (a) the preview shows the real finished cards and (b) publish never
+  // has to touch fal.ai. Aligned with spec.slides by index.
+  let slideImages = [];
+  if (contentType === 'carousel' && Array.isArray(spec.slides) && spec.slides.length) {
+    try {
+      slideImages = await generateSlideImages({ slides: spec.slides, brandSlug, brief });
+    } catch (err) {
+      console.error('[social-media] slide image batch failed (continuing with cover only):', err.message || err);
+      slideImages = [];
+    }
+  }
+
   return {
     model,
     image_model: IMAGE_MODEL,
@@ -335,6 +412,7 @@ async function generateContent({ brief, requestedModel }) {
     spec,
     cover, // { url, content_type } or null
     cover_source: coverSource, // 'fal' | 'user_upload' | null
+    slide_images: slideImages, // carousel only; aligned with spec.slides, null gaps allowed
   };
 }
 

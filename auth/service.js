@@ -1,5 +1,6 @@
 const db_helper = require('../helper/db_helper');
 const auth_helper = require('../helper/auth_helper');
+const passwordHelper = require('../helper/password_helper');
 const jwt = require('jsonwebtoken');
 const jwtSecret = process.env.JWT_SECRET || process.env.SECRET_KEY || 'default_secret';
 const PROFILE_SELECT = `
@@ -22,37 +23,69 @@ function firstReturnedRow(result) {
     return null;
 }
 
-exports.login = (req, res) => {
+exports.login = (req) => {
   return new Promise((resolve, reject) => {
-    const { email, password } = req.body;
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password ?? '');
+
+    if (!email || !password) {
+      return resolve({ success: false });
+    }
 
     db_helper.get_db_connection(req)
       .then((db) => {
-        const sql = `SELECT * FROM users WHERE email = ? AND password = ?`;
-        db.query(sql, [email, password], async (err, result) => {
+        // Look the user up by email only (case-insensitive), then
+        // verify the password in JS. This supports both scrypt-hashed
+        // rows and legacy plaintext rows; legacy rows are upgraded to
+        // the hashed format on a successful login.
+        const sql = `SELECT * FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1`;
+        db.query(sql, [email], (err, result) => {
           if (err) {
-            console.error("Error executing query:", err);
+            console.error('login: query failed:', err);
             return reject(err);
           }
 
-          if (result.length) {
-            console.log('resultlogin', result[0].id);
-            const token = jwt.sign(
-                  { email: result[0].email },
-                  jwtSecret,
-                  { expiresIn: '1h' }
-                );
-            console.log('resulttoken', token);
-            resolve({
-              success: true,
-              token: token,
-              name: result[0].name,
-              email: result[0].email,
-              profile_photo_url: result[0].profile_photo_url || null,
-            });
-          } else {
-            resolve({ success: false });
+          const user = result?.[0];
+          if (!user || !user.password) {
+            // No such user, or a Google-only account with no password
+            // set. Same generic failure so we don't leak which.
+            return resolve({ success: false });
           }
+          if (user.active === 0) {
+            return resolve({ success: false });
+          }
+
+          const check = passwordHelper.verify(password, user.password);
+          if (!check.ok) {
+            return resolve({ success: false });
+          }
+
+          // Transparent upgrade: re-store legacy plaintext as scrypt.
+          // Best-effort; a failure here must not block the login.
+          if (check.legacy) {
+            try {
+              db.query(
+                `UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?`,
+                [passwordHelper.hash(password), user.id],
+                (upErr) => {
+                  if (upErr) console.warn('login: legacy password upgrade failed:', upErr.message);
+                }
+              );
+            } catch (upErr) {
+              console.warn('login: legacy password upgrade threw:', upErr.message);
+            }
+          }
+
+          // 7 days to match the Google OAuth path. The old 1h expiry
+          // meant users hit "Invalid authorization token" mid-session.
+          const token = jwt.sign({ email: user.email }, jwtSecret, { expiresIn: '7d' });
+          resolve({
+            success: true,
+            token,
+            name: user.name,
+            email: user.email,
+            profile_photo_url: user.profile_photo_url || null,
+          });
         });
       })
       .catch(reject);
@@ -228,19 +261,26 @@ exports.updateProfile = async (email, profile) => {
 
 exports.updatePassword = async (email, currentPassword, newPassword) => {
     const normalizedEmail = normalizeEmail(email);
+    if (String(newPassword ?? '').length < 6) {
+        return { success: false, message: 'New password must be at least 6 characters' };
+    }
     const db_poll = await db_helper.get_db_connection();
     const rows = await db_poll.query(
-        `SELECT id FROM users WHERE LOWER(email) = LOWER(?) AND password = ? LIMIT 1`,
-        [normalizedEmail, currentPassword]
+        `SELECT id, password FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1`,
+        [normalizedEmail]
     );
-
-    if (!rows || !rows.length) {
+    const user = Array.isArray(rows) ? rows[0] : rows?.rows?.[0];
+    if (!user) {
+        return { success: false, message: 'Current password is incorrect' };
+    }
+    const check = passwordHelper.verify(currentPassword, user.password);
+    if (!check.ok) {
         return { success: false, message: 'Current password is incorrect' };
     }
 
     await db_poll.query(
         `UPDATE users SET password = ?, updated_at = NOW() WHERE LOWER(email) = LOWER(?)`,
-        [newPassword, normalizedEmail]
+        [passwordHelper.hash(newPassword), normalizedEmail]
     );
 
     return { success: true };

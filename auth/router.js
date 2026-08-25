@@ -98,9 +98,30 @@ router.get(
         reason: 'oauth_disabled',
       }));
     }
-    return passport.authenticate('google', {
-      failureRedirect: callbackRedirect({ status: 'error', reason: 'google_failed' }),
-      session: true,
+    // Custom callback instead of failureRedirect: passport treats
+    // token-exchange failures (TokenError: "Invalid authorization
+    // code", typically a reused/expired code from a double-hit on this
+    // URL, or a redirect_uri mismatch) as ERRORS, not auth failures.
+    // With the default wiring those fall through to Express's error
+    // handler and the user sees a raw stack page. Here every outcome
+    // becomes a clean redirect to the frontend callback screen.
+    //
+    // session: false — we don't read req.session downstream (mode comes
+    // back via Google's state param) and serverless MemoryStore sessions
+    // are per-instance anyway.
+    return passport.authenticate('google', { session: false }, (err, user) => {
+      if (err) {
+        console.error('Google OAuth exchange failed:', err.message || err);
+        const reason = /invalid authorization code|code was already redeemed|invalid_grant/i.test(String(err.message))
+          ? 'code_expired'
+          : 'google_failed';
+        return res.redirect(callbackRedirect({ status: 'error', reason }));
+      }
+      if (!user) {
+        return res.redirect(callbackRedirect({ status: 'error', reason: 'google_failed' }));
+      }
+      req.user = user;
+      return next();
     })(req, res, next);
   },
   async (req, res) => {

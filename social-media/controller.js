@@ -58,10 +58,25 @@ async function save(req, res) {
     }
     const {
       post_id, project_id, content_type, brief, spec, cover, caption, hashtags,
-      platforms = [], status, scheduled_for, batch_parent_id,
+      platforms = [], status, scheduled_for, batch_parent_id, slide_images,
     } = req.body || {};
 
-    const assets = cover ? { cover_url: cover.url || cover, cover_content_type: cover.content_type || null } : null;
+    // Assets: cover + (for carousels) the per-slide designed images.
+    // slide_urls is aligned with spec.slides; nulls (failed slides) are
+    // dropped since the publisher only needs the usable ones in order.
+    let assets = null;
+    if (cover || (Array.isArray(slide_images) && slide_images.length)) {
+      assets = {};
+      if (cover) {
+        assets.cover_url = cover.url || cover;
+        assets.cover_content_type = cover.content_type || null;
+      }
+      if (Array.isArray(slide_images) && slide_images.length) {
+        assets.slide_urls = slide_images
+          .map((s) => (s && (s.url || typeof s === 'string')) ? (s.url || s) : null)
+          .filter(Boolean);
+      }
+    }
     const platformsStr = Array.isArray(platforms) ? platforms.join(',') : String(platforms || '');
     const hashtagsStr = normalizeHashtags(hashtags);
     const allowedStatus = new Set(['draft', 'scheduled', 'published', 'failed']);
@@ -302,6 +317,7 @@ async function library(req, res) {
         scheduled_for: r.scheduled_for,
         published_at: r.published_at,
         cover_url: r.assets_json?.cover_url || null,
+        slide_urls: Array.isArray(r.assets_json?.slide_urls) ? r.assets_json.slide_urls : [],
         spec: r.spec_json,
         metrics: r.metrics_json || null,
         created_at: r.created_at,

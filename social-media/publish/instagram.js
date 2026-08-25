@@ -45,6 +45,30 @@ async function createImageContainer({ base, igUserId, accessToken, imageUrl, cap
   return res.data?.id;
 }
 
+// Child container for one card of a carousel. No caption on children;
+// the caption lives on the parent CAROUSEL container.
+async function createCarouselItemContainer({ base, igUserId, accessToken, imageUrl }) {
+  const url = `${base}/${igUserId}/media`;
+  const res = await axios.post(url, null, {
+    params: { image_url: imageUrl, is_carousel_item: 'true', access_token: accessToken },
+  });
+  return res.data?.id;
+}
+
+// Parent container that stitches the children into one swipeable post.
+async function createCarouselContainer({ base, igUserId, accessToken, childrenIds, caption }) {
+  const url = `${base}/${igUserId}/media`;
+  const res = await axios.post(url, null, {
+    params: {
+      media_type: 'CAROUSEL',
+      children: childrenIds.join(','),
+      caption,
+      access_token: accessToken,
+    },
+  });
+  return res.data?.id;
+}
+
 async function createReelsContainer({ base, igUserId, accessToken, videoUrl, caption }) {
   const url = `${base}/${igUserId}/media`;
   const res = await axios.post(url, null, {
@@ -115,12 +139,38 @@ async function publish({ post, connection, assets }) {
   });
 
   const base = graphBaseFor(connection);
+
+  // Carousel: cover + per-slide designed images, published as a real
+  // multi-card IG carousel. IG requires 2-10 children; if we only have
+  // one usable image we fall back to a single-image post.
+  const carouselUrls = post.content_type === 'carousel'
+    ? [assets?.cover_url, ...(Array.isArray(assets?.slide_urls) ? assets.slide_urls : [])]
+        .filter((u) => typeof u === 'string' && /^https?:\/\//i.test(u))
+        .filter((u, i, arr) => arr.indexOf(u) === i)
+        .slice(0, 10)
+    : [];
+
   let containerId;
   if (post.content_type === 'reel') {
     if (!assets?.video_url) throw new Error('Reel publish requires a video_url');
     containerId = await createReelsContainer({ base, igUserId, accessToken, videoUrl: assets.video_url, caption });
     // Reels: poll up to 3 minutes for transcoding.
     await waitForContainerReady({ base, containerId, accessToken, intervalMs: 5000, timeoutMs: 3 * 60 * 1000 });
+  } else if (post.content_type === 'carousel' && carouselUrls.length >= 2) {
+    // 1. Create all child containers in parallel, then poll them all in
+    //    parallel. Sequential would blow the serverless function timeout
+    //    with 6+ slides (each create+poll is 3-5s).
+    const childIds = await Promise.all(
+      carouselUrls.map((imageUrl) => createCarouselItemContainer({ base, igUserId, accessToken, imageUrl }))
+    );
+    await Promise.all(
+      childIds.map((childId) => waitForContainerReady({
+        base, containerId: childId, accessToken, intervalMs: 1500, timeoutMs: 45 * 1000,
+      }))
+    );
+    // 2. Parent CAROUSEL container carrying the caption + child order.
+    containerId = await createCarouselContainer({ base, igUserId, accessToken, childrenIds: childIds, caption });
+    await waitForContainerReady({ base, containerId, accessToken, intervalMs: 1500, timeoutMs: 45 * 1000 });
   } else {
     if (!assets?.cover_url) throw new Error('Instagram publish requires a cover_url');
     containerId = await createImageContainer({ base, igUserId, accessToken, imageUrl: assets.cover_url, caption });
